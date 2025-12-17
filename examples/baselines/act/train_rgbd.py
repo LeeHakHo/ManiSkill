@@ -45,9 +45,7 @@ OBS_KEYS_TO_REMOVE = {"world__T__ee", "world__T__root"}
 @dataclass
 class Args:
 
-    camera_width: int
-    camera_height: int
-    distraction_set: str
+    #distraction_set: str
 
     exp_name: Optional[str] = None
     """the name of this experiment"""
@@ -111,7 +109,7 @@ class Args:
     """the frequency of logging the training metrics"""
     eval_freq: int = 5000
     """the frequency of evaluating the agent on the evaluation environments"""
-    save_freq: Optional[int] = None
+    save_freq: Optional[int] = 1000 #Hayden
     """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
     num_eval_episodes: int = 100
     """the number of episodes to evaluate the agent on"""
@@ -494,9 +492,7 @@ if __name__ == "__main__":
     # env setup
     env_kwargs = dict(
         control_mode=args.control_mode, reward_mode="sparse", obs_mode="rgbd" if args.include_depth else "rgb", render_mode="rgb_array",
-        camera_width=args.camera_width,
-        camera_height=args.camera_height,
-        distraction_set=DISTRACTION_SETS[args.distraction_set.upper()],
+        #distraction_set=DISTRACTION_SETS[args.distraction_set.upper()],
     )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -564,13 +560,31 @@ if __name__ == "__main__":
     ema_agent = Agent(envs, args).to(device)
 
     # Evaluation
+    
+    #Hayden
+    eval_stats = None
+    if dataset.norm_stats is not None:
+        eval_stats = {k: (v.to(device) if torch.is_tensor(v) else v)
+                      for k, v in dataset.norm_stats.items()}
+
+    
     #eval_kwargs = dict(
     #    stats=dataset.norm_stats, num_queries=args.num_queries, temporal_agg=args.temporal_agg,
     #    max_timesteps=gym_utils.find_max_episode_steps_value(envs), device=device, sim_backend=args.sim_backend
     #)
+    #eval_kwargs = dict(
+    #    stats=dataset.norm_stats, num_queries=args.num_queries, temporal_agg=args.temporal_agg,
+    #    max_timesteps=args.max_episode_steps, device=device, sim_backend=args.sim_backend
+    #)
+    
+    #Hayden
     eval_kwargs = dict(
-        stats=dataset.norm_stats, num_queries=args.num_queries, temporal_agg=args.temporal_agg,
-        max_timesteps=args.max_episode_steps, device=device, sim_backend=args.sim_backend
+        stats=eval_stats,
+        num_queries=args.num_queries,
+        temporal_agg=args.temporal_agg,
+        max_timesteps=args.max_episode_steps,
+        device=device,
+        sim_backend=args.sim_backend
     )
 
     # ---------------------------------------------------------------------------- #
