@@ -4,7 +4,7 @@
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-ALGO_NAME = "BC_Diffusion_rgbd_Dita_FSDP_Final"
+ALGO_NAME = "BC_Diffusion_rgbd_Dita_DDP_Final"
 
 import random
 import time
@@ -23,22 +23,14 @@ import torchvision.transforms as T
 from tqdm import tqdm
 import tyro
 from diffusers.optimization import get_scheduler
-# from diffusers.training_utils import EMAModel # [수정] FSDP 충돌 방지를 위해 제거
+from diffusers.training_utils import EMAModel # ✅ EMA 부활
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    MixedPrecision,
-    ShardingStrategy,
-    FullStateDictConfig,
-    StateDictType,
-)
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from torch.nn.parallel import DistributedDataParallel as DDP # ✅ FSDP -> DDP 변경
 
 from diffusion_policy.evaluate import evaluate
 from diffusion_policy.make_env import make_eval_envs
@@ -62,12 +54,13 @@ class Args:
     wandb_entity: Optional[str] = None
     capture_video: bool = True
 
-    env_id: str = "StackCube-v1" # 예시 환경
+    env_id: str = "StackCube-v1"
     demo_path: str = "demos/StackCube-v1/trajectory.h5" 
     num_demos: Optional[int] = None
-    total_iters: int = 30000 # [참고] 논문에선 100k step이지만 few-shot엔 30k도 적절할 수 있음
+    total_iters: int = 30000 
 
-    batch_size: int = 32  # GPU당 32 (8GPU면 총 256)
+    # ✅ 배치 사이즈 수정: GPU당 32 (8GPU = 256) -> ACT와 공정 비교
+    batch_size: int = 32  
 
     lr: float = 1e-4
     obs_horizon: int = 2
@@ -75,7 +68,6 @@ class Args:
     pred_horizon: int = 16
     diffusion_step_embed_dim: int = 64
     
-    # Dita는 ImageNet Pretrained DINOv2를 쓰므로 RGB 모드 필수
     obs_mode: str = "rgb+depth" 
     max_episode_steps: Optional[int] = None
     log_freq: int = 100
@@ -84,10 +76,10 @@ class Args:
     num_eval_episodes: int = 50
     num_eval_envs: int = 10
 
-    sim_backend: str = "gpu" # H100이면 GPU 시뮬레이션 권장
-    num_dataload_workers: int = 0
+    sim_backend: str = "gpu"
+    num_dataload_workers: int = 4 # 데이터 로더 워커 약간 늘림
 
-    control_mode: str = "pd_joint_pos" # 혹은 pd_joint_delta_pos
+    control_mode: str = "pd_joint_pos"
     
     instruction_text: str = "Stack the red cube on the blue cube"
     clip_text_model_name: str = "openai/clip-vit-base-patch32"
@@ -121,7 +113,6 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
         images_depth = []
         for cam_data in sensor_data.values():
             if self.include_rgb:
-                # (B, H, W, 3) -> (B, 3, H, W) -> Resize
                 resized_rgb = self.transforms(cam_data["rgb"].permute(0, 3, 1, 2))
                 images_rgb.append(resized_rgb)
             if self.include_depth:
@@ -136,10 +127,10 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
             ret["state"] = flat_state
 
         if self.include_rgb:
-            ret["rgb"] = torch.stack(images_rgb, dim=1)  # (B, num_cams, 3, 224, 224)
+            ret["rgb"] = torch.stack(images_rgb, dim=1) 
 
         if self.include_depth:
-            ret["depth"] = torch.stack(images_depth, dim=1)  # (B, num_cams, 1, 224, 224)
+            ret["depth"] = torch.stack(images_depth, dim=1) 
 
         if "agent_pos" not in ret:
             ret["agent_pos"] = ret.get("state", flat_state)
@@ -160,7 +151,6 @@ class SmallDemoDataset_Dita_ACTStyle(Dataset):
 
         from diffusion_policy.utils import load_demo_dataset
         print(f"Loading dataset from {data_path} into RAM...")
-        # [주의] N_DEMOS가 크면 여기서 OOM 발생 가능. 10개면 OK.
         trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
 
         self.transforms = T.Compose([T.Resize((224, 224), antialias=True)])
@@ -191,7 +181,6 @@ class SmallDemoDataset_Dita_ACTStyle(Dataset):
                 elif "pd_joint_pos" in control_mode:
                     self.pad_action_arm = None
                 else:
-                    # Default handling
                     pass
 
         self.trajectories = trajectories
@@ -288,7 +277,6 @@ class DitaAgent(nn.Module):
 
         self.time_sequence_length = self.obs_horizon + self.pred_horizon - 1
 
-        # [수정 1] ImageNet Stats for DINOv2 (Dita 논문 스펙)
         self.register_buffer("clip_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 1, 3, 1, 1))
         self.register_buffer("clip_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 1, 3, 1, 1))
 
@@ -325,14 +313,12 @@ class DitaAgent(nn.Module):
             input_size="(224, 224)",
             include_prev_timesteps_actions=False,
             freeze_backbone=True,
-            # [수정 2] Dita는 Q-Former 필수 (Architecture Align)
             use_qformer=True, 
             use_wrist_img=False,
             use_depth_img=False,
             dim_align_type=0,
             prediction_type="epsilon",
             scheduler_type=1,
-            # [수정 3] 논문 DDIM 10 steps 권장
             num_inference_steps=10, 
             attn_implementation="eager",
             use_action_head_diff=2,
@@ -340,7 +326,8 @@ class DitaAgent(nn.Module):
         
         self.noise_scheduler = self.net.noise_scheduler
         self.noise_scheduler_eval = self.net.noise_scheduler_eval
-        self.net.transformer.gradient_checkpointing_enable()
+        # DDP에서는 gradient checkpointing을 켤 때 주의가 필요하지만, 일반적으로는 OK
+        # self.net.transformer.gradient_checkpointing_enable()
 
     def _normalize_action(self, a: torch.Tensor) -> torch.Tensor:
         return torch.clamp((a - self.act_mid) / self.act_scale, -1.0, 1.0)
@@ -379,7 +366,6 @@ class DitaAgent(nn.Module):
         if rgb.max() > 1.0:
             rgb = rgb / 255.0
 
-        # 여기서 ImageNet Stats로 정규화
         rgb = (rgb - self.clip_mean) / self.clip_std
         obs = {"image": rgb}
 
@@ -474,13 +460,14 @@ class DitaAgent(nn.Module):
         return actions
 
 
-def save_ckpt_fsdp(run_name, tag, agent, rank):
+def save_ckpt(run_name, tag, agent, ema_agent, rank):
     os.makedirs(f"runs/{run_name}/checkpoints", exist_ok=True)
-    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(agent, StateDictType.FULL_STATE_DICT, save_policy):
-        agent_state = agent.state_dict()
     if rank == 0:
-        torch.save({"agent": agent_state}, f"runs/{run_name}/checkpoints/{tag}.pt")
+        # Save both standard model and EMA model
+        torch.save({
+            "agent": agent.module.state_dict() if isinstance(agent, DDP) else agent.state_dict(),
+            "ema_agent": ema_agent.state_dict()
+        }, f"runs/{run_name}/checkpoints/{tag}.pt")
 
 
 if __name__ == "__main__":
@@ -494,7 +481,7 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
 
     if rank == 0:
-        print(f"Running in FSDP Mode. World Size: {dist.get_world_size()}")
+        print(f"Running in DDP Mode. World Size: {dist.get_world_size()}")
 
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
@@ -543,7 +530,7 @@ if __name__ == "__main__":
             name=run_name,
             save_code=True,
             group="Dita",
-            tags=["dita", "diffusion_policy", "fsdp"],
+            tags=["dita", "diffusion_policy", "ddp", "ema"],
         )
 
     writer = SummaryWriter(f"runs/{run_name}") if rank == 0 else None
@@ -573,31 +560,25 @@ if __name__ == "__main__":
         drop_last=True,
     )
 
+    # Agent setup
     agent = DitaAgent(None, args).to(device)
 
-    ignored_modules = []
-    if hasattr(agent.net, "vision_backbone"):
-        ignored_modules.append(agent.net.vision_backbone)
-    else:
-        for _, module in agent.net.named_modules():
-            if isinstance(module, timm.models.vision_transformer.VisionTransformer):
-                ignored_modules.append(module)
-                break
-
-    llama_auto_wrap_policy = partial(transformer_auto_wrap_policy, transformer_layer_cls={LlamaDecoderLayer})
-    bf16_policy = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16)
-
-    agent = FSDP(
-        agent,
-        auto_wrap_policy=llama_auto_wrap_policy,
-        mixed_precision=bf16_policy,
-        device_id=local_rank,
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        limit_all_gathers=False,
-        forward_prefetch=False,
-        use_orig_params=True,
-        ignored_modules=ignored_modules,
+    # ✅ EMA 설정 (DDP 이전/이후 어디든 상관없으나 보통 모델 wrapping 전후로 함)
+    # diffusers의 EMAModel은 파라미터를 복사해서 유지함
+    # H100 80GB가 충분하므로 각 GPU마다 EMA 복사본을 가져도 문제 없음
+    ema = EMAModel(
+        parameters=agent.parameters(),
+        power=0.75, # ACT 코드에 맞춰 0.75로 설정 (Dita 기본값 확인 필요, 보통 0.9999 많이 씀)
+        model_cls=DitaAgent,
+        model_config=None 
     )
+    ema_agent = DitaAgent(None, args).to(device) # 평가용 껍데기 모델
+    ema_agent.eval()
+
+    # ✅ DDP Wrap
+    # Vision Backbone이 Freeze 되어 있으므로 find_unused_parameters=False가 효율적일 수 있으나,
+    # 일부 모듈이 안 쓰일 경우 안전을 위해 True로 두기도 함. 여기선 Backbone이 freeze라 False 추천.
+    agent = DDP(agent, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     optimizer = optim.AdamW(params=agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6)
     lr_scheduler = get_scheduler(
@@ -607,34 +588,17 @@ if __name__ == "__main__":
         num_training_steps=args.total_iters,
     )
 
-    # [수정 4] FSDP 학습 시 Online EMA 제거 (충돌 방지)
-    # 평가를 위한 Placeholder 모델 (가중치 로드용)
-    eval_agent = None
-    if rank == 0:
-        eval_agent = DitaAgent(envs, args).to(device)
-        eval_agent.eval()
-
     iterator = iter(train_dataloader)
     current_iter = 0
     pbar = tqdm(total=args.total_iters) if rank == 0 else None
 
     while current_iter < args.total_iters:
-        if rank == 0 and current_iter == 0:
-            print("[DBG] loop entered", flush=True)
-
         try:
-            if rank == 0 and current_iter == 0:
-                print("[DBG] before next(iterator)", flush=True)
             data_batch = next(iterator)
-            if rank == 0 and current_iter == 0:
-                print("[DBG] after next(iterator)", flush=True)
         except StopIteration:
             sampler.set_epoch(current_iter // max(1, len(train_dataloader)))
             iterator = iter(train_dataloader)
             data_batch = next(iterator)
-
-        if rank == 0 and current_iter == 0:
-            print("[DBG] before to(device)", flush=True)
 
         obs_gpu = {}
         for k, v in data_batch["observations"].items():
@@ -642,31 +606,19 @@ if __name__ == "__main__":
                 obs_gpu[k] = v.to(device, non_blocking=True)
         act_gpu = data_batch["actions"].to(device, non_blocking=True)
 
-        if rank == 0 and current_iter == 0:
-            print("[DBG] after to(device)", flush=True)
-
         optimizer.zero_grad()
 
-        if rank == 0 and current_iter == 0:
-            print("[DBG] before forward", flush=True)
-
+        # Mixed Precision Training
         with torch.cuda.amp.autocast(dtype=torch.bfloat16):
             total_loss = agent(obs_gpu, act_gpu)
 
-        if rank == 0 and current_iter == 0:
-            print("[DBG] after forward", flush=True)
-
         total_loss.backward()
-
-        if rank == 0 and current_iter == 0:
-            print("[DBG] after backward", flush=True)
-
         torch.nn.utils.clip_grad_norm_(agent.parameters(), 1.0)
         optimizer.step()
         lr_scheduler.step()
 
-
-        # [수정] Online EMA step 제거 (FSDP와 호환되지 않음)
+        # ✅ Update EMA
+        ema.step(agent.parameters())
 
         if rank == 0 and (current_iter % args.log_freq == 0):
             writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], current_iter)
@@ -674,32 +626,20 @@ if __name__ == "__main__":
 
         if current_iter > 0 and (current_iter % args.eval_freq == 0):
             dist.barrier()
+            # ✅ EMA 가중치로 평가 수행
             if rank == 0:
-                print("Gathering weights for evaluation...")
-
-            # FSDP 가중치를 CPU로 Gather
-            with FSDP.state_dict_type(
-                agent,
-                StateDictType.FULL_STATE_DICT,
-                FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-            ):
-                state_dict = agent.state_dict()
-
-            if rank == 0:
-                # 평가용 모델에 로드
-                eval_agent.load_state_dict(state_dict)
-                eval_agent.eval()
+                print("Copying EMA weights for evaluation...")
+                ema.copy_to(ema_agent.parameters())
+                
                 print("Running evaluation on GPU...")
-
-                # eval_agent를 사용하여 평가 진행
-                eval_metrics = evaluate(args.num_eval_episodes, eval_agent, envs, device, args.sim_backend)
+                eval_metrics = evaluate(args.num_eval_episodes, ema_agent, envs, device, args.sim_backend)
 
                 print(f"Iter {current_iter}: Success Rate {np.mean(eval_metrics['success_at_end']):.4f}")
                 for k, v in eval_metrics.items():
                     writer.add_scalar(f"eval/{k}", np.mean(v), current_iter)
 
-                # 체크포인트 저장
-                save_ckpt_fsdp(run_name, str(current_iter), agent, rank)
+                # 체크포인트 저장 (EMA 포함)
+                save_ckpt(run_name, str(current_iter), agent, ema_agent, rank)
 
             dist.barrier()
 
