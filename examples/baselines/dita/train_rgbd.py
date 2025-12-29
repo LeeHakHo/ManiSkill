@@ -1,10 +1,7 @@
-# =========================
-# ✅ MUST be before torch import
-# =========================
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-ALGO_NAME = "BC_Diffusion_rgbd_Dita_DDP_Final"
+ALGO_NAME = "BC_Diffusion_rgbd_Dita_DDP"
 
 import random
 import time
@@ -23,14 +20,14 @@ import torchvision.transforms as T
 from tqdm import tqdm
 import tyro
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import EMAModel # ✅ EMA 부활
+from diffusers.training_utils import EMAModel
 
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP # ✅ FSDP -> DDP 변경
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from diffusion_policy.evaluate import evaluate
 from diffusion_policy.make_env import make_eval_envs
@@ -59,7 +56,6 @@ class Args:
     num_demos: Optional[int] = None
     total_iters: int = 30000 
 
-    # ✅ 배치 사이즈 수정: GPU당 32 (8GPU = 256) -> ACT와 공정 비교
     batch_size: int = 32  
 
     lr: float = 1e-4
@@ -77,7 +73,7 @@ class Args:
     num_eval_envs: int = 10
 
     sim_backend: str = "gpu"
-    num_dataload_workers: int = 4 # 데이터 로더 워커 약간 늘림
+    num_dataload_workers: int = 4
 
     control_mode: str = "pd_joint_pos"
     
@@ -326,8 +322,6 @@ class DitaAgent(nn.Module):
         
         self.noise_scheduler = self.net.noise_scheduler
         self.noise_scheduler_eval = self.net.noise_scheduler_eval
-        # DDP에서는 gradient checkpointing을 켤 때 주의가 필요하지만, 일반적으로는 OK
-        # self.net.transformer.gradient_checkpointing_enable()
 
     def _normalize_action(self, a: torch.Tensor) -> torch.Tensor:
         return torch.clamp((a - self.act_mid) / self.act_scale, -1.0, 1.0)

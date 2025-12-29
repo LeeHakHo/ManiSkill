@@ -5,7 +5,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=64 
-#SBATCH --mem=80000
+#SBATCH --mem=320000
 #SBATCH --time=06:30:00
 #!/bin/bash 
 
@@ -16,17 +16,17 @@ cd ..
 #DISTRACTION_SET=none
 ## ^ Must be one of: none, all, distractor_object_cfg, MO_color_cfg, MO_texture_cfg, RO_color_cfg, RO_texture_cfg, table_color_cfg, table_texture_cfg, camera_pose_cfg
 
-#python mani_skill/examples/motionplanning/panda/run.py \
-#    --env-id RaiseCube-v1 \
-#    --num-traj 10 \
-#    --distraction-set ${DISTRACTION_SET} \
-#    --num-procs 1 \
-#    --reward-mode "sparse" \
-#    --random-seed
+python mani_skill/examples/motionplanning/panda/run.py \
+    --env-id PullCubeTool-v1 \
+    --num-traj 10 \
+    --distraction-set ${DISTRACTION_SET} \
+    --num-procs 1 \
+    --reward-mode "sparse" \
+    --random-seed
 
 
 seed=1
-ENV_ID=PlugCharger-v1
+ENV_ID=PullCubeTool-v1
 N_DEMOS=10
 
 python examples/baselines/act/train_rgbd.py \
@@ -35,7 +35,7 @@ python examples/baselines/act/train_rgbd.py \
 --control-mode "pd_joint_pos" \
 --sim-backend "gpu"  \
 --num-demos "${N_DEMOS}" \
---max-episode-steps 200  \
+--max-episode-steps 300  \
 --total-iters 30000 \
 --log-freq 100  \
 --eval-freq 5000 \
