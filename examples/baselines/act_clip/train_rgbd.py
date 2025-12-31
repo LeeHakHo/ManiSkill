@@ -45,7 +45,7 @@ OBS_KEYS_TO_REMOVE = {"world__T__ee", "world__T__root"}
 @dataclass
 class Args:
 
-    #distraction_set: str
+    distraction_set: str
 
     exp_name: Optional[str] = None
     """the name of this experiment"""
@@ -61,7 +61,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False #Hayden
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     env_id: str = "PickCube-v1"
@@ -78,7 +78,7 @@ class Args:
     """ language_instruction for clip embedding"""
     
     # ACT specific arguments
-    lr: float = 5e-4
+    lr: float = 1e-4
     """the learning rate of the Action Chunking with Transformers"""
     kl_weight: float = 0.1
     """weight for the kl loss term"""
@@ -111,7 +111,7 @@ class Args:
     """the frequency of logging the training metrics"""
     eval_freq: int = 5000
     """the frequency of evaluating the agent on the evaluation environments"""
-    save_freq: Optional[int] = 1000 #Hayden
+    save_freq: Optional[int] = None
     """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
     num_eval_episodes: int = 100
     """the number of episodes to evaluate the agent on"""
@@ -509,7 +509,7 @@ if __name__ == "__main__":
     # env setup
     env_kwargs = dict(
         control_mode=args.control_mode, reward_mode="sparse", obs_mode="rgbd" if args.include_depth else "rgb", render_mode="rgb_array",
-        #distraction_set=DISTRACTION_SETS[args.distraction_set.upper()],
+        distraction_set=DISTRACTION_SETS[args.distraction_set.upper()],
     )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -522,6 +522,7 @@ if __name__ == "__main__":
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
+    #Hayden
     train_dataloader = DataLoader(
         dataset,
         batch_sampler=batch_sampler,
@@ -544,8 +545,8 @@ if __name__ == "__main__":
             config=config,
             name=run_name,
             save_code=True,
-            group="ACT",
-            tags=["act"]
+            group="ACT_CLIP",
+            tags=["act_clip"]
         )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
@@ -555,6 +556,7 @@ if __name__ == "__main__":
 
     # agent setup
     agent = Agent(envs, args).to(device)
+    agent = torch.compile(agent) #Hayden
 
     # optimizer setup
     param_dicts = [
@@ -653,10 +655,21 @@ if __name__ == "__main__":
 
             save_on_best_metrics = ["success_once", "success_at_end"]
             for k in save_on_best_metrics:
-                if k in eval_metrics and eval_metrics[k] > best_eval_metrics[k]:
-                    best_eval_metrics[k] = eval_metrics[k]
-                    save_ckpt(run_name, f"best_eval_{k}")
-                    print(f'New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint.')
+                if k in eval_metrics:
+                    curr_val = eval_metrics[k]
+                    if curr_val > best_eval_metrics[k]:
+                        best_eval_metrics[k] = curr_val
+                        save_ckpt(run_name, f"best_eval_{k}")
+                        status = f"NEW BEST! Saving checkpoint."
+                    else:
+                        status = f"(Best: {best_eval_metrics[k]:.4f})"
+                        
+                    print(f" {k:15s}: {curr_val:.4f} | {status}")
+                        
+                    if args.track:
+                        wandb.log({
+                            f"eval/best_{k}": best_eval_metrics[k]
+                        }, step=cur_iter)
 
         if cur_iter % args.log_freq == 0:
             print(f"Iteration {cur_iter}, loss: {total_loss.item()}")

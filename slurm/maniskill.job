@@ -1,43 +1,54 @@
-#!/bin/bash
-#SBATCH --account=158401129936
-#SBATCH --nodes=1
+#!/usr/bin/env bash
+#SBATCH --time=36:00:00
+#SBATCH --qos=gpu
+#SBATCH --partition=ai
+#SBATCH --gres=gpu:1
+#SBATCH -C H100
 #SBATCH --ntasks-per-node=1
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:h100:1
-#SBATCH --cpus-per-task=64 
-#SBATCH --mem=320000
-#SBATCH --time=06:30:00
-#!/bin/bash 
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=148G
+#SBATCH --job-name=act_jointpos
+
+
+export WANDB_API_KEY="61a1a21df93bbb2da31d41abc3400294b59ba6eb"
 
 source ~/.bashrc
-conda activate act-ms
-cd ..
+conda activate act-clip
+cd /anvil/scratch/x-hoh3/code/ManiSkill/
 
-#DISTRACTION_SET=none
-## ^ Must be one of: none, all, distractor_object_cfg, MO_color_cfg, MO_texture_cfg, RO_color_cfg, RO_texture_cfg, table_color_cfg, table_texture_cfg, camera_pose_cfg
+# ENV_ID=StackCube-v1
+# N_DEMOS=10
+# DISTRACTION_SET=none
 
-python mani_skill/examples/motionplanning/panda/run.py \
-    --env-id PullCubeTool-v1 \
-    --num-traj 10 \
-    --distraction-set ${DISTRACTION_SET} \
-    --num-procs 1 \
-    --reward-mode "sparse" \
-    --random-seed
+# python mani_skill/examples/motionplanning/panda/run.py \
+#     --env-id ${ENV_ID} \
+#     --num-traj ${N_DEMOS} \
+#     --distraction-set ${DISTRACTION_SET} \
+#     --num-procs 1 \
+#     --reward-mode "sparse" \
+#     --traj-name "trajectory_${N_DEMOS}" \
+#     --random-seed \
+#     --obs-mode rgbd
 
 
 seed=1
-ENV_ID=PullCubeTool-v1
+ENV_ID=StackCube-v1
 N_DEMOS=10
+DISTRACTION_SET=none
+
+wandb login
 
 python examples/baselines/act/train_rgbd.py \
---env-id "${ENV_ID}" \
---demo-path "/scratch/user/u.ho340935/code/ManiSkill/demos/${ENV_ID}/motionplanning/trajectory_${N_DEMOS}.h5" \
---control-mode "pd_joint_pos" \
---sim-backend "gpu"  \
---num-demos "${N_DEMOS}" \
---max-episode-steps 300  \
---total-iters 30000 \
---log-freq 100  \
---eval-freq 5000 \
---exp-name "act-${ENV_ID}-${N_DEMOS}_motionplanning_demos-${seed}"
-
+    --env-id ${ENV_ID} \
+    --distraction-set ${DISTRACTION_SET} \
+    --demo-path demos/${ENV_ID}/motionplanning/trajectory_${N_DEMOS}.h5 \
+    --sim-backend "gpu" --num_demos "${N_DEMOS}" \
+    --max-episode-steps 300 \
+    --total_iters 500000 --log_freq 100 --eval_freq 5000 \
+    --batch-size 256\
+    --exp-name=act-${ENV_ID}-${N-DEMOS}_motionplanning_demos-$seed \
+    --control_mode pd_joint_pos \
+    --wandb_entity "alda_robots_team" \
+    --num-dataload-workers 16 \
+    --kl_weight 0.001 \
+    --track # track training on wandb
