@@ -62,7 +62,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = False #Hayden
+    capture_video: bool = True #Hayden
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     env_id: str = "PickCube-v1"
@@ -90,7 +90,7 @@ class Args:
     lr_backbone: float = 1e-5
     masks: bool = False
     dilation: bool = False
-    include_depth: bool = True
+    include_depth: bool = False #Hayden
 
     # Transformer
     enc_layers: int = 2
@@ -125,6 +125,7 @@ class Args:
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
+
 
 
 class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
@@ -370,6 +371,11 @@ class Agent(nn.Module):
         assert len(env.single_action_space.shape) == 1 # (act_dim,)
         #assert (env.single_action_space.high == 1).all() and (env.single_action_space.low == -1).all()
 
+        print("single_action_space:", envs.single_action_space)
+        print("low :", envs.single_action_space.low)
+        print("high:", envs.single_action_space.high)
+
+
         self.state_dim = env.single_observation_space['state'].shape[0]
         self.act_dim = env.single_action_space.shape[0]
         self.kl_weight = args.kl_weight
@@ -398,10 +404,13 @@ class Agent(nn.Module):
         )
 
     def compute_loss(self, obs, action_seq):
+        
+        #print(f"DEBUG - Raw RGB min: {obs['rgb'].min().item()}, max: {obs['rgb'].max().item()}")
         # normalize rgb data
         obs['rgb'] = obs['rgb'].float() / 255.0
+        #print(f"DEBUG - Scaled RGB min: {obs['rgb'].min().item()}, max: {obs['rgb'].max().item()}")
         obs['rgb'] = self.normalize(obs['rgb'])
-
+        #print(f"DEBUG - Final RGB min: {obs['rgb'].min().item()}, max: {obs['rgb'].max().item()}")
         # depth data
         if args.include_depth:
             obs['depth'] = obs['depth'].float()
@@ -506,7 +515,6 @@ if __name__ == "__main__":
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
-    #Hayden
     train_dataloader = DataLoader(
         dataset,
         batch_sampler=batch_sampler,
@@ -540,7 +548,7 @@ if __name__ == "__main__":
 
     # agent setup
     agent = Agent(envs, args).to(device)
-    agent = torch.compile(agent) #Hayden
+    #agent = torch.compile(agent) #Hayden
 
     # optimizer setup
     param_dicts = [
@@ -622,7 +630,7 @@ if __name__ == "__main__":
         # update Exponential Moving Average of the model weights
         ema.step(agent.parameters())
         timings["update"] += time.time() - last_tick
-
+        
         # Evaluation
         if cur_iter % args.eval_freq == 0:
             last_tick = time.time()
@@ -640,21 +648,10 @@ if __name__ == "__main__":
 
             save_on_best_metrics = ["success_once", "success_at_end"]
             for k in save_on_best_metrics:
-                if k in eval_metrics:
-                    curr_val = eval_metrics[k]
-                    if curr_val > best_eval_metrics[k]:
-                        best_eval_metrics[k] = curr_val
-                        save_ckpt(run_name, f"best_eval_{k}")
-                        status = f"⭐ NEW BEST! Saving checkpoint."
-                    else:
-                        status = f"(Best: {best_eval_metrics[k]:.4f})"
-                        
-                    print(f" {k:15s}: {curr_val:.4f} | {status}")
-                        
-                    if args.track:
-                        wandb.log({
-                            f"eval/best_{k}": best_eval_metrics[k]
-                        }, step=cur_iter)
+                if k in eval_metrics and eval_metrics[k] > best_eval_metrics[k]:
+                    best_eval_metrics[k] = eval_metrics[k]
+                    save_ckpt(run_name, f"best_eval_{k}")
+                    print(f'New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint.')
 
         if cur_iter % args.log_freq == 0:
             print(f"Iteration {cur_iter}, loss: {total_loss.item()}")

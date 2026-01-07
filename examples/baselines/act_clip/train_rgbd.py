@@ -61,7 +61,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = False #Hayden
+    capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     env_id: str = "PickCube-v1"
@@ -80,7 +80,7 @@ class Args:
     # ACT specific arguments
     lr: float = 1e-4
     """the learning rate of the Action Chunking with Transformers"""
-    kl_weight: float = 0.1
+    kl_weight: float = 10
     """weight for the kl loss term"""
     temporal_agg: bool = True
     """if toggled, temporal ensembling will be performed"""
@@ -91,7 +91,7 @@ class Args:
     lr_backbone: float = 1e-5
     masks: bool = False
     dilation: bool = False
-    include_depth: bool = True
+    include_depth: bool = False  #Hayden
 
     # Transformer
     enc_layers: int = 2
@@ -102,6 +102,9 @@ class Args:
     nheads: int = 8
     num_queries: int = 30
     pre_norm: bool = False
+
+    #lr_project_lr
+    lr_lang: float = 1e-3
 
     # Environment/experiment specific arguments
     max_episode_steps: Optional[int] = None
@@ -556,16 +559,36 @@ if __name__ == "__main__":
 
     # agent setup
     agent = Agent(envs, args).to(device)
-    agent = torch.compile(agent) #Hayden
+    #agent = torch.compile(agent) #Hayden
 
+    #Hayden
     # optimizer setup
+    # param_dicts = [
+    #     {"params": [p for n, p in agent.named_parameters() if "backbone" not in n and p.requires_grad]},
+    #     {
+    #         "params": [p for n, p in agent.named_parameters() if "backbone" in n and p.requires_grad],
+    #         "lr": args.lr_backbone,
+    #     },
+    # ]
+
     param_dicts = [
-        {"params": [p for n, p in agent.named_parameters() if "backbone" not in n and p.requires_grad]},
-        {
-            "params": [p for n, p in agent.named_parameters() if "backbone" in n and p.requires_grad],
-            "lr": args.lr_backbone,
-        },
-    ]
+    {
+        "params": [
+            p for n, p in agent.named_parameters() 
+            if "backbone" not in n and "lang_proj" not in n and p.requires_grad
+        ]
+    },
+    #Backbone
+    {
+        "params": [p for n, p in agent.named_parameters() if "backbone" in n and p.requires_grad],
+        "lr": args.lr_backbone,
+    },
+    #Lang_mlp
+    {
+        "params": [p for n, p in agent.named_parameters() if "lang_proj" in n and p.requires_grad],
+        "lr": args.lr_lang,
+    },
+]
     optimizer = optim.AdamW(param_dicts, lr=args.lr, weight_decay=1e-4)
 
     # LR drop by a factor of 10 after lr_drop iters
@@ -655,21 +678,10 @@ if __name__ == "__main__":
 
             save_on_best_metrics = ["success_once", "success_at_end"]
             for k in save_on_best_metrics:
-                if k in eval_metrics:
-                    curr_val = eval_metrics[k]
-                    if curr_val > best_eval_metrics[k]:
-                        best_eval_metrics[k] = curr_val
-                        save_ckpt(run_name, f"best_eval_{k}")
-                        status = f"NEW BEST! Saving checkpoint."
-                    else:
-                        status = f"(Best: {best_eval_metrics[k]:.4f})"
-                        
-                    print(f" {k:15s}: {curr_val:.4f} | {status}")
-                        
-                    if args.track:
-                        wandb.log({
-                            f"eval/best_{k}": best_eval_metrics[k]
-                        }, step=cur_iter)
+                if k in eval_metrics and eval_metrics[k] > best_eval_metrics[k]:
+                    best_eval_metrics[k] = eval_metrics[k]
+                    save_ckpt(run_name, f"best_eval_{k}")
+                    print(f'New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint.')
 
         if cur_iter % args.log_freq == 0:
             print(f"Iteration {cur_iter}, loss: {total_loss.item()}")

@@ -67,15 +67,15 @@ class DETRVAE(nn.Module):
             #self.lang_encoder, _ = clip.load(model_path, device)
             self.lang_encoder, _ = clip.load('ViT-B/32', device)
             self.lang_proj = nn.Sequential(
-                nn.Linear(512, 256),
+                nn.Linear(512, hidden_dim),
                 nn.ReLU(inplace=True),
-                nn.LayerNorm(256),
+                nn.LayerNorm(hidden_dim),
 
-                nn.Linear(256, 256),
+                nn.Linear(hidden_dim, hidden_dim),
                 nn.ReLU(inplace=True),
-                nn.LayerNorm(256),
+                nn.LayerNorm(hidden_dim),
 
-                nn.Linear(256, 256),
+                nn.Linear(hidden_dim, hidden_dim),
                 )
             
             self.lang_encoder.eval()
@@ -150,6 +150,8 @@ class DETRVAE(nn.Module):
                     lang_emb = self.lang_encoder.encode_text(lang_batch)
                 lang_emb = self.lang_proj(lang_emb.float())
                 lang_emb = lang_emb.unsqueeze(0)
+
+                #lang_emb = torch.zeros_like(lang_emb) #Hayden 제로 패딩 실험!!!!!! 꼭 지워야함!!!!!!!
             else:
                 lang_emb = None
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight, lang_emb )[0] # (batch, num_queries, hidden_dim)

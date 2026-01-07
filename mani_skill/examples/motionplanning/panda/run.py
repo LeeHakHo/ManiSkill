@@ -67,6 +67,8 @@ def parse_args(args=None):
     parser.add_argument("--record-dir", type=str, default="demos", help="where to save the recorded trajectories")
     parser.add_argument("--num-procs", type=int, default=1, help="Number of processes to use to help parallelize the trajectory replay process. This uses CPU multiprocessing and only works with the CPU simulation backend at the moment.")
     parser.add_argument("--distraction-set", type=str, required=True, help=f"Distraction set to use. Available options are {list(DISTRACTION_SETS.keys())}")
+    parser.add_argument("--control-mode", default="pd_ee_delta_pose", type=str, required=False, help=f"control mode to use.")
+    return parser.parse_args()
     return parser.parse_args()
 
 def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
@@ -78,7 +80,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         env = gym.make(
             env_id,
             obs_mode=args.obs_mode,
-            control_mode="pd_joint_pos",
+            control_mode=args.control_mode,
             render_mode=args.render_mode,
             reward_mode="dense" if args.reward_mode is None else args.reward_mode,
             sensor_configs=dict(shader_pack=args.shader),
@@ -92,7 +94,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         env = gym.make(
             env_id,
             obs_mode=args.obs_mode,
-            control_mode="pd_joint_pos",
+            control_mode=args.control_mode,
             render_mode=args.render_mode,
             reward_mode="dense" if args.reward_mode is None else args.reward_mode,
             sensor_configs=dict(shader_pack=args.shader),

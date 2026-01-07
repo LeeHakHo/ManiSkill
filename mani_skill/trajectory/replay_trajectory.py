@@ -255,7 +255,20 @@ def replay_cpu_sim(
         sanity_check_and_format_seed(episode)
         episode_id = episode["episode_id"]
         traj_id = f"traj_{episode_id}"
-        reset_kwargs = episode["reset_kwargs"]
+        
+        #reset_kwargs = episode["reset_kwargs"]
+        #Hayden
+
+        reset_kwargs = copy.deepcopy(episode["reset_kwargs"])
+        opts = reset_kwargs.get("options") or {}
+        opts["reconfigure"] = True
+        reset_kwargs["options"] = opts
+
+        env.reset(**reset_kwargs)
+        if ori_env is not None:
+            ori_env.reset(**reset_kwargs)
+
+
         ori_control_mode = episode["control_mode"]
         if pbar is not None:
             pbar.set_description(f"Replaying {traj_id}, Number successful replays: {successful_replays}/{len(episodes)}")

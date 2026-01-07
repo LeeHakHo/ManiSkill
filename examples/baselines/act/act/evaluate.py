@@ -41,6 +41,11 @@ def evaluate(n: int, agent, eval_envs, eval_kwargs):
             if use_visual_obs:
                 obs['state'] = pre_process(obs['state']) if not delta_control else obs['state']  # (num_envs, obs_dim)
                 obs = {k: common.to_tensor(v, device) for k, v in obs.items()}
+
+                # rgb_min = obs['rgb'].min().item()
+                # rgb_max = obs['rgb'].max().item()
+                # print(f"[DEBUG] Eval RGB Range: {rgb_min:.4f} ~ {rgb_max:.4f}") #[DEBUG] Eval RGB Range: 0.0000 ~ 255.0000
+
             else:
                 obs = pre_process(obs) if not delta_control else obs  # (num_envs, obs_dim)
                 obs = common.to_tensor(obs, device)
@@ -72,8 +77,12 @@ def evaluate(n: int, agent, eval_envs, eval_kwargs):
                 if ts % query_frequency == 0:
                     actions_to_take = action_seq
                 raw_action = actions_to_take[:, ts % query_frequency]
-
             action = post_process(raw_action) if not delta_control else raw_action  # (num_envs, act_dim)
+            
+            #print(f"[DEBUG] Raw (Normalized): {raw_action[0, :3].cpu().numpy()}") # 모델이 뱉은 값 (-3.96 등)
+            #print(f"[DEBUG] Post (De-normalized): {action[0, :3].cpu().numpy() if torch.is_tensor(action) else action[0, :3]}") # 변환된 값
+            #print(f"[DEBUG] Stats Loaded: {'YES' if not delta_control else 'NO (Check norm_stats.pt!)'}")
+            #print("-" * 50)
             if sim_backend == "physx_cpu":
                 action = action.cpu().numpy()
 
@@ -100,4 +109,21 @@ def evaluate(n: int, agent, eval_envs, eval_kwargs):
     agent.train()
     for k in eval_metrics.keys():
         eval_metrics[k] = np.stack(eval_metrics[k])
+
+    #video log
+    save_name = "latest_eval"
+    
+    print(f"[DEBUG] Attempting to flush video with name: {save_name}")
+    
+    try:
+        if hasattr(eval_envs, "flush_video"):
+            eval_envs.flush_video(name=save_name)
+            print(f"[DEBUG] VectorEnv flush_video(name='{save_name}') successful.")
+        else:
+            eval_envs.call("flush_video") 
+            print("[DEBUG] VectorEnv.call('flush_video') executed.")
+
+    except Exception as e:
+        print(f"[DEBUG] All flush attempts failed: {e}")
+
     return eval_metrics
