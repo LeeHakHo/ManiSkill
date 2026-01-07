@@ -7,7 +7,7 @@ from pathlib import Path
 from setuptools import find_packages, setup
 
 # update this version when a new official pypi release is made
-__version__ = "3.0.0b21"
+__version__ = "3.0.0b22"
 
 
 def get_package_version():
@@ -49,7 +49,9 @@ def get_dependencies():
         "huggingface_hub",  # we use HF to version control some assets/datasets more easily
         "sapien>=3.0.0;platform_system=='Linux'",
         "sapien>=3.0.0.b1;platform_system=='Windows'",
-        "termcolor"
+        "termcolor",
+        "coacd",
+        "pin==2.7.0"
     ]
     # NOTE (stao): until sapien is uploaded to pypi with mac support, users need to install manually below as so
     # f"sapien @ https://github.com/haosulab/SAPIEN/releases/download/nightly/sapien-3.0.0.dev20250303+291f6a77-{python_version}-{python_version}-macosx_12_0_universal2.whl;platform_system=='Darwin'"

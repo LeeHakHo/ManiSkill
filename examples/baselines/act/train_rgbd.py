@@ -1,6 +1,7 @@
 ALGO_NAME = 'BC_ACT_rgbd'
 
 from collections import defaultdict
+from collections import defaultdict
 import argparse
 import os
 import random
@@ -20,6 +21,7 @@ from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.utils import common, gym_utils
 from mani_skill.utils.registration import REGISTERED_ENVS
 
+import tqdm
 import tqdm
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import RandomSampler, BatchSampler
@@ -45,6 +47,9 @@ OBS_KEYS_TO_REMOVE = {"world__T__ee", "world__T__root"}
 
 @dataclass
 class Args:
+
+    distraction_set: str
+
 
     distraction_set: str
 
@@ -163,6 +168,12 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
             except KeyError:
                 pass
 
+        for key in OBS_KEYS_TO_REMOVE:
+            try:
+                del observation["agent"][key]
+            except KeyError:
+                pass
+
         images_rgb = []
         images_depth = []
         for cam_data in sensor_data.values():
@@ -218,12 +229,14 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         # Pre-process the observations, make them align with the obs returned by the FlattenRGBDObservationWrapper
         obs_traj_dict_list = []
         for obs_traj_dict in tqdm.tqdm(trajectories['observations'], desc='Pre-processing observations'):
+        for obs_traj_dict in tqdm.tqdm(trajectories['observations'], desc='Pre-processing observations'):
             obs_traj_dict = self.process_obs(obs_traj_dict)
             obs_traj_dict_list.append(obs_traj_dict)
         trajectories['observations'] = obs_traj_dict_list
         self.obs_keys = list(obs_traj_dict.keys())
 
         # Pre-process the actions
+        for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
         for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
             trajectories['actions'][i] = torch.Tensor(trajectories['actions'][i])
         print('Obs/action pre-processing is done.')
@@ -238,6 +251,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         self.slices = []
         self.num_traj = len(trajectories['actions'])
+        for traj_idx in tqdm.tqdm(range(self.num_traj), desc='Pre-processing trajectories'):
         for traj_idx in tqdm.tqdm(range(self.num_traj), desc='Pre-processing trajectories'):
             episode_len = trajectories['actions'][traj_idx].shape[0]
             self.slices += [
@@ -294,6 +308,13 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         return len(self.slices)
 
     def process_obs(self, obs_dict):
+        # remove keys that shouldn't be included in the observation space
+        for key in OBS_KEYS_TO_REMOVE:
+            try:
+                del obs_dict["agent"][key]
+            except KeyError:
+                pass
+
         # remove keys that shouldn't be included in the observation space
         for key in OBS_KEYS_TO_REMOVE:
             try:
@@ -504,6 +525,10 @@ if __name__ == "__main__":
         control_mode=args.control_mode, reward_mode="sparse", obs_mode="rgbd" if args.include_depth else "rgb", render_mode="rgb_array",
         distraction_set=DISTRACTION_SETS[args.distraction_set.upper()],
     )
+    env_kwargs = dict(
+        control_mode=args.control_mode, reward_mode="sparse", obs_mode="rgbd" if args.include_depth else "rgb", render_mode="rgb_array",
+        distraction_set=DISTRACTION_SETS[args.distraction_set.upper()],
+    )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
     other_kwargs = None
@@ -607,6 +632,7 @@ if __name__ == "__main__":
     best_eval_metrics = defaultdict(float)
     timings = defaultdict(float)
 
+    for cur_iter, data_batch in tqdm.tqdm(enumerate(train_dataloader), desc='Training', total=args.total_iters):
     for cur_iter, data_batch in tqdm.tqdm(enumerate(train_dataloader), desc='Training', total=args.total_iters):
         last_tick = time.time()
         # copy data from cpu to gpu

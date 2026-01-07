@@ -11,7 +11,7 @@ from tqdm import tqdm
 import os.path as osp
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.trajectory.merge_trajectory import merge_trajectories
-from mani_skill.examples.motionplanning.panda.solutions import solvePushCube, solvePickCube, solveStackCube, solvePegInsertionSide, solvePlugCharger, solvePullCubeTool, solveLiftPegUpright, solvePullCube, solveDrawTriangle, solveDrawSVG, solvePlaceSphere,solveOpenDrawer,solveRaiseCube
+from mani_skill.examples.motionplanning.panda.solutions import solvePushCube, solvePickCube, solveStackCube, solvePegInsertionSide, solvePlugCharger, solvePullCubeTool, solveLiftPegUpright, solvePullCube, solveDrawTriangle, solveDrawSVG, solvePlaceSphere,solveOpenDrawer,solveRaiseCube, solvePlaceBookInShelf, solveHangClothingFrameOnPole, solvePickSodaFromCabinet, solveRotateArrow, solveScoopParticles, solvePickLightbulbPlaceSocket, solvePlaceAppleOnPlate,solvePickBananaFromOpenDrawer,solvePlaceDishInRack,solvePickDishFromRack,solvePourSphere
 from mani_skill.envs.distraction_set import DISTRACTION_SETS
 
 MP_SOLUTIONS = {
@@ -33,20 +33,44 @@ MP_SOLUTIONS = {
     "OpenDrawer-v1": solveOpenDrawer,               # new
     "PushCube-v2": solvePushCube,                   # new
     "StackCube-v2": solveStackCube,                 # new
+
+    "PlaceBookInShelf-v1": solvePlaceBookInShelf,
+    "HangClothingFrameOnPole-v1": solveHangClothingFrameOnPole,
+    "PickSodaFromCabinet-v1": solvePickSodaFromCabinet,
+    "RotateArrow-v1": solveRotateArrow,
+    "ScoopParticles-v1": solveScoopParticles,
+    "PickBananaFromOpenDrawer-v1": solvePickBananaFromOpenDrawer,    # new
+    "PickLightbulbPlaceSocket-v1": solvePickLightbulbPlaceSocket, #new
+    "PlaceAppleOnPlate-v1": solvePlaceAppleOnPlate, # new
+    "PlaceDishInRack-v1": solvePlaceDishInRack, # new
+    "PickDishFromRack-v1": solvePickDishFromRack, # new
+    "PourSphere-v1": solvePourSphere, # new
 }
 
 """
+ENV_ID=PickCube-v1
 DISTRACTION_SET=none
 # ^ Must be one of: none, all, distractor_object_cfg, MO_color_cfg, MO_texture_cfg, RO_color_cfg, RO_texture_cfg, table_color_cfg, table_texture_cfg, camera_pose_cfg
 
 python mani_skill/examples/motionplanning/panda/run.py \
     --env-id ${ENV_ID} \
-    --num-traj 10 \
+    --num-traj 60 \
     --distraction-set ${DISTRACTION_SET} \
-    --num-procs 1 \
+    --num-procs 10 \
     --reward-mode "sparse" \
     --random-seed \
-    --vis
+    --only-count-success \
+    --traj-name "trajectory" \
+    --save-video      # <- optional
+    # --vis           # <- optional
+
+# Convert to ee_delta_pos with:
+python mani_skill/trajectory/replay_trajectory.py \
+    --traj-path demos/PickCube-v1/motionplanning/trajectory.h5 \
+    --obs-mode "rgb" \
+    --target_control_mode "pd_ee_delta_pos" \
+    --save-traj \
+    --save-video      # <- optional
 """
 
 
@@ -67,8 +91,6 @@ def parse_args(args=None):
     parser.add_argument("--record-dir", type=str, default="demos", help="where to save the recorded trajectories")
     parser.add_argument("--num-procs", type=int, default=1, help="Number of processes to use to help parallelize the trajectory replay process. This uses CPU multiprocessing and only works with the CPU simulation backend at the moment.")
     parser.add_argument("--distraction-set", type=str, required=True, help=f"Distraction set to use. Available options are {list(DISTRACTION_SETS.keys())}")
-    parser.add_argument("--control-mode", default="pd_ee_delta_pose", type=str, required=False, help=f"control mode to use.")
-    return parser.parse_args()
     return parser.parse_args()
 
 def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
@@ -80,7 +102,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         env = gym.make(
             env_id,
             obs_mode=args.obs_mode,
-            control_mode=args.control_mode,
+            control_mode="pd_joint_pos",
             render_mode=args.render_mode,
             reward_mode="dense" if args.reward_mode is None else args.reward_mode,
             sensor_configs=dict(shader_pack=args.shader),
@@ -94,7 +116,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         env = gym.make(
             env_id,
             obs_mode=args.obs_mode,
-            control_mode=args.control_mode,
+            control_mode="pd_joint_pos",
             render_mode=args.render_mode,
             reward_mode="dense" if args.reward_mode is None else args.reward_mode,
             sensor_configs=dict(shader_pack=args.shader),
@@ -107,7 +129,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         raise RuntimeError(f"No already written motion planning solutions for {env_id}. Available options are {list(MP_SOLUTIONS.keys())}")
 
     if not args.traj_name:
-        new_traj_name = time.strftime("%Y%m%d_%H%M%S")
+        new_traj_name = time.strftime("%Y-%m-%d_%H:%M:%S")
     else:
         new_traj_name = args.traj_name
 
@@ -149,6 +171,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
             success = res[-1]["success"].item()
             elapsed_steps = res[-1]["elapsed_steps"].item()
             solution_episode_lengths.append(elapsed_steps)
+        print(f"Success: {success}")
         successes.append(success)
         if args.only_count_success and not success:
             seed += 1
@@ -159,15 +182,15 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         else:
             env.flush_trajectory()
             if args.save_video:
-                env.flush_video()
+                env.flush_video(name=f"{new_traj_name}___n:{len(successes)}")
             pbar.update(1)
             pbar.set_postfix(
                 dict(
                     success_rate=np.mean(successes),
                     failed_motion_plan_rate=failed_motion_plans / (seed + 1),
                     avg_episode_length=np.mean(solution_episode_lengths),
-                    max_episode_length=np.max(solution_episode_lengths),
-                    min_episode_length=np.min(solution_episode_lengths)
+                    max_episode_length=np.max(solution_episode_lengths) if solution_episode_lengths else -1,
+                    min_episode_length=np.min(solution_episode_lengths) if solution_episode_lengths else -1
                 )
             )
             seed += 1
