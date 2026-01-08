@@ -143,16 +143,17 @@ class DETRVAE(nn.Module):
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3) # (batch, hidden_dim, 4, 8)
             pos = torch.cat(all_cam_pos, axis=3) # (batch, hidden_dim, 4, 8)
-            if lang_instruction is not None:
+            if lang_instruction is not None and lang_instruction[0] != "":
+                if isinstance(lang_instruction, str):
+                    lang_instruction = [lang_instruction] * bs
+                #print(f"Language Condition is {lang_instruction}")
                 lang_batch = clip.tokenize(lang_instruction).to(state.device)
-                lang_batch = lang_batch.expand(bs, -1)
                 with torch.no_grad():
                     lang_emb = self.lang_encoder.encode_text(lang_batch)
                 lang_emb = self.lang_proj(lang_emb.float())
                 lang_emb = lang_emb.unsqueeze(0)
-
-                #lang_emb = torch.zeros_like(lang_emb) #Hayden 제로 패딩 실험!!!!!! 꼭 지워야함!!!!!!!
             else:
+                print("Language Condition is False")
                 lang_emb = None
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight, lang_emb )[0] # (batch, num_queries, hidden_dim)
 

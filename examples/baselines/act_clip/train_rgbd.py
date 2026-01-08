@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 import tyro
 from mani_skill.envs.distraction_set import DISTRACTION_SETS
+from mani_skill.utils.io_utils import load_json
 
 # Note(@jstmn): 'world__T__ee', 'world__T__root' were added to the observation space of the Panda agent as a 
 # convenience feature. We remove it here because it isn't included in the default ACT method. Additionally, it 
@@ -76,6 +77,8 @@ class Args:
     """the batch size of sample from the replay memory"""
     lang_instruction: Optional[str] = None
     """ language_instruction for clip embedding"""
+    internal_instruction: bool = None
+    """ use pre-defiend language_instructions for clip embedding"""
     
     # ACT specific arguments
     lr: float = 1e-4
@@ -129,6 +132,13 @@ class Args:
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
+
+        
+    TASK_TEXT_MAP = {
+        "PullCube-v1": "pull the cube closer to your base",
+        "PickCube-v1": "pick the cube up into the air",
+        "PushCube-v1": "push the cube forward on the table"
+    }
 
 
 class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
@@ -201,7 +211,7 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
 
 class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
-    def __init__(self, data_path, num_queries, num_traj, include_depth=True):
+    def __init__(self, data_path, num_queries, num_traj, internal_instruction, lang_instruction, include_depth=True):
         if data_path[-4:] == '.pkl':
             raise NotImplementedError()
         else:
@@ -224,6 +234,31 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             obs_traj_dict = self.process_obs(obs_traj_dict)
             obs_traj_dict_list.append(obs_traj_dict)
         trajectories['observations'] = obs_traj_dict_list
+
+
+        #Hayden - multi-task
+        from collections import Counter
+        import torch
+
+        # 모든 traj의 state dim 카운트
+        dims = [o["state"].shape[1] for o in trajectories["observations"]]   # (T, D)
+        print("[STATE DIM COUNTS]", Counter(dims))
+
+        target_dim = max(dims)   # 지금이면 29로 통일하는 게 보통 안전
+        print("[STATE TARGET DIM]", target_dim)
+
+        for o in trajectories["observations"]:
+            s = o["state"]  # (T, D)
+            d = s.shape[1]
+            if d < target_dim:
+                pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
+                o["state"] = torch.cat([s, pad], dim=1)
+            elif d > target_dim:
+                o["state"] = s[:, :target_dim]
+
+        #--------------------------
+
+
         self.obs_keys = list(obs_traj_dict.keys())
 
         # Pre-process the actions
@@ -254,8 +289,32 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         self.delta_control = 'delta' in args.control_mode
         self.norm_stats = self.get_norm_stats() if not self.delta_control else None
 
+
+        #Hayden - multi-task
+        self.internal_instruction = internal_instruction
+        self.lang_instruction = lang_instruction
+        
+        if self.internal_instruction:
+            self.json_data = load_json(data_path.replace(".h5", ".json"))
+            self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
+
+            from collections import Counter
+            print("[EP ENV_ID COUNTS]", Counter(self.episode_env_ids))
+
     def __getitem__(self, index):
         traj_idx, ts = self.slices[index]
+
+        #Hayden - multi-task
+        TASK_TEXT_MAP = Args.TASK_TEXT_MAP  # 전역/클래스 변수로 접근
+
+        if self.internal_instruction:
+            env_id = self.episode_env_ids[traj_idx]
+            assert env_id in TASK_TEXT_MAP, f"Task '{env_id}' not in TASK_TEXT_MAP"
+            instruction = TASK_TEXT_MAP[env_id]
+        elif self.lang_instruction is not None:
+            instruction = self.lang_instruction
+        else:
+            instruction = ""
 
         # get state at start_ts only
         state = self.trajectories['observations'][traj_idx]['state'][ts]
@@ -291,6 +350,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         return {
             'observations': obs,
             'actions': act_seq,
+            'lang_instruction': instruction
         }
 
     def __len__(self):
@@ -393,7 +453,7 @@ class Agent(nn.Module):
 
         # ACT ( CVAE encoder + (CNN backbones + CVAE decoder) )
         
-        if args.lang_instruction is not None:
+        if args.lang_instruction is not None or args.internal_instruction is not None:
             use_lang_instruction = True
         else:
             use_lang_instruction = False
@@ -408,7 +468,7 @@ class Agent(nn.Module):
             use_lang_instruction=use_lang_instruction,
         )
 
-    def compute_loss(self, obs, action_seq):
+    def compute_loss(self, obs, action_seq, lang_instruction):
         # normalize rgb data
         obs['rgb'] = obs['rgb'].float() / 255.0
         obs['rgb'] = self.normalize(obs['rgb'])
@@ -421,7 +481,7 @@ class Agent(nn.Module):
         a_hat, (mu, logvar) = self.model(
         obs=obs, 
         actions=action_seq, 
-        lang_instruction=args.lang_instruction)
+        lang_instruction=lang_instruction)
 
         # compute l1 loss and kl loss
         total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
@@ -482,6 +542,44 @@ def save_ckpt(run_name, tag):
 if __name__ == "__main__":
     args = tyro.cli(Args)
 
+    #Hayden - defensive for multi task
+    demo_json = None
+    is_multi_task = False
+    try:
+        demo_json = load_json(args.demo_path.replace(".h5", ".json"))
+        is_multi_task = bool(demo_json.get("multi_env", False))
+    except Exception as e:
+        print("[WARN] failed to read demo json for multi_env:", e)
+
+    # Multi-task policy:
+    #   - either use internal_instruction
+    #   - or use no language embedding at all (both None/False)
+    if is_multi_task:
+        if args.internal_instruction:
+            # internal_instruction 켜면 lang_instruction은 혼동 방지용으로 무시
+            if args.lang_instruction is not None:
+                print("[WARN] multi-task + internal_instruction=True: ignoring lang_instruction")
+                args.lang_instruction = None
+        else:
+            # internal_instruction 안 쓰면 "언어 임베딩 자체를 안쓴다"가 정책
+            if args.lang_instruction is not None:
+                raise ValueError(
+                    "Multi-task에 -> internal_instruction=True or "
+                    "set lang_instruction=None(=no language embedding)"
+                )
+
+    # Single-task policy:
+    #   - either use lang_instruction (fixed sentence)
+    #   - or no language embedding at all
+    else:
+        # single task에서는 internal_instruction 쓰는 걸 금지(원하면 allow로 바꿔도 됨)
+        if args.internal_instruction:
+            raise ValueError(
+                "do not use internal_instruction for Single-task. "
+                "use lang_instruction"
+            )
+
+
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
         run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
@@ -521,7 +619,7 @@ if __name__ == "__main__":
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
 
     # dataloader setup
-    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth)
+    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, internal_instruction=args.internal_instruction, lang_instruction=args.lang_instruction)
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
@@ -644,10 +742,14 @@ if __name__ == "__main__":
         obs_batch_dict = {k: v.cuda(non_blocking=True) for k, v in obs_batch_dict.items()}
         act_batch = data_batch['actions'].cuda(non_blocking=True)
 
+
+        instructions = data_batch['lang_instruction']
+
         # forward and compute loss
         loss_dict = agent.compute_loss(
             obs=obs_batch_dict, # obs_batch_dict['state'] is (B, obs_dim)
             action_seq=act_batch, # (B, num_queries, act_dim)
+            lang_instruction=instructions,
         )
         total_loss = loss_dict['loss']  # total_loss = l1 + kl * self.kl_weight
 
