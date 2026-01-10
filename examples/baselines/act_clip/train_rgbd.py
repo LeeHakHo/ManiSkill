@@ -77,7 +77,7 @@ class Args:
     """the batch size of sample from the replay memory"""
     lang_instruction: Optional[str] = None
     """ language_instruction for clip embedding"""
-    internal_instruction: bool = None
+    internal_instruction: bool = False
     """ use pre-defiend language_instructions for clip embedding"""
     
     # ACT specific arguments
@@ -495,7 +495,7 @@ class Agent(nn.Module):
         loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight
         return loss_dict
 
-    def get_action(self, obs):
+    def get_action(self, obs, lang_instruction=None):
         # normalize rgb data
         obs['rgb'] = obs['rgb'].float() / 255.0
         obs['rgb'] = self.normalize(obs['rgb'])
@@ -504,12 +504,26 @@ class Agent(nn.Module):
         if args.include_depth:
             obs['depth'] = obs['depth'].float()
 
+
+        current_dim = obs['state'].shape[-1]
+        if current_dim < self.state_dim:
+            # 부족한 만큼 0으로 채운 텐서 생성
+            pad_size = self.state_dim - current_dim
+            padding = torch.zeros(
+                (*obs['state'].shape[:-1], pad_size), 
+                device=obs['state'].device, 
+                dtype=obs['state'].dtype
+            )
+            # 가로로 합치기 -> 결과적으로 무조건 29차원이 됨
+            obs['state'] = torch.cat([obs['state'], padding], dim=-1)
+
+
         # forward pass
         #a_hat, (_, _) = self.model(obs, ) # no action, sample from prior
         
         a_hat, (_, _) = self.model(
             obs=obs, 
-            lang_instruction=args.lang_instruction
+            lang_instruction=lang_instruction
         )
         
         return a_hat
@@ -617,6 +631,20 @@ if __name__ == "__main__":
     other_kwargs = None
     wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth)]
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
+
+
+    #Hayden - eval envs for each task
+    envs_by_task = None
+    if is_multi_task:
+        envs_by_task = {}
+        for eid in demo_json.get("env_ids", []):
+            envs_by_task[eid] = make_eval_envs(
+                eid, args.num_eval_envs, args.sim_backend,
+                env_kwargs, other_kwargs,
+                video_dir=f'runs/{run_name}/videos' if args.capture_video else None,
+                wrappers=wrappers
+            )
+
 
     # dataloader setup
     dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, internal_instruction=args.internal_instruction, lang_instruction=args.lang_instruction)
@@ -763,39 +791,77 @@ if __name__ == "__main__":
         ema.step(agent.parameters())
         timings["update"] += time.time() - last_tick
 
-        # Evaluation
+        #Evaluation
         if cur_iter % args.eval_freq == 0:
             last_tick = time.time()
-
             ema.copy_to(ema_agent.parameters())
 
-            eval_metrics = evaluate(args.num_eval_episodes, ema_agent, envs, eval_kwargs)
+            if not is_multi_task:
+                # --- [Single-task Evaluation] ---
+                eval_lang = args.lang_instruction
+                eval_metrics = evaluate(
+                    args.num_eval_episodes, ema_agent, envs, eval_kwargs,
+                    lang_instruction=eval_lang,
+                    save_name="latest_eval"
+                )
+            else:
+                # --- [Multi-task Evaluation] ---
+                all_task_success_rates = []
+                # 최종적으로 하단 로깅에서 쓸 통합 metrics 딕셔너리
+                combined_metrics = defaultdict(list)
+
+                for eid, task_envs in envs_by_task.items():
+                    eval_lang = Args.TASK_TEXT_MAP[eid] if args.internal_instruction else None
+                    
+                    task_metrics = evaluate(
+                        args.num_eval_episodes, ema_agent, task_envs, eval_kwargs,
+                        lang_instruction=eval_lang,
+                        save_name=f"latest_eval_{eid}"
+                    )
+
+                    # 각 태스크별 성공률 수집 (평균 계산용)
+                    s_rate = np.mean(task_metrics["success_at_end"])
+                    all_task_success_rates.append(s_rate)
+
+                    # 1. 태스크별 개별 로깅 (Pick, Pull, Push 각각 따로 기록)
+                    for k, v in task_metrics.items():
+                        m = np.mean(v)
+                        writer.add_scalar(f"eval/{eid}/{k}", m, cur_iter)
+                        combined_metrics[k].append(m) # 전체 평균용 데이터 수집
+                    
+                    print(f"[{eid}] success_at_end: {s_rate:.4f}")
+
+                # 2. 전체 태스크 평균(Average) 계산하여 하단 로깅 변수에 할당
+                eval_metrics = {}
+                for k, v_list in combined_metrics.items():
+                    eval_metrics[k] = np.mean(v_list)
+                
+                # 가독성을 위해 별도 로그 남김
+                avg_success = np.mean(all_task_success_rates)
+                writer.add_scalar("eval/overall_avg_success", avg_success, cur_iter)
+                print(f"--- [Overall] Average Success Rate: {avg_success:.4f} ---")
+
+            # --- [Common Logging & Checkpointing] ---
+            # 이제 eval_metrics는 단일 태스크 결과거나 멀티태스크의 '평균' 결과임
             timings["eval"] += time.time() - last_tick
 
-            print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")
+            print(f"Evaluated {args.num_eval_episodes} episodes per task")
             for k in eval_metrics.keys():
-                eval_metrics[k] = np.mean(eval_metrics[k])
-                writer.add_scalar(f"eval/{k}", eval_metrics[k], cur_iter)
-                print(f"{k}: {eval_metrics[k]:.4f}")
+                # 이미 위에서 평균을 냈으므로 np.mean은 안전장치용
+                m_val = np.mean(eval_metrics[k])
+                writer.add_scalar(f"eval/{k}", m_val, cur_iter)
+                print(f"Total {k}: {m_val:.4f}")
 
+            # 베스트 모델 저장 기준 (멀티태스크인 경우 전체 평균 성공률 기준)
             save_on_best_metrics = ["success_once", "success_at_end"]
             for k in save_on_best_metrics:
-                if k in eval_metrics and eval_metrics[k] > best_eval_metrics[k]:
-                    best_eval_metrics[k] = eval_metrics[k]
+                if k in eval_metrics and np.mean(eval_metrics[k]) > best_eval_metrics[k]:
+                    best_eval_metrics[k] = np.mean(eval_metrics[k])
                     save_ckpt(run_name, f"best_eval_{k}")
-                    print(f'New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint.')
-
-        if cur_iter % args.log_freq == 0:
-            print(f"Iteration {cur_iter}, loss: {total_loss.item()}")
-            writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], cur_iter)
-            writer.add_scalar("charts/backbone_learning_rate", optimizer.param_groups[1]["lr"], cur_iter)
-            writer.add_scalar("losses/total_loss", total_loss.item(), cur_iter)
-            for k, v in timings.items():
-                writer.add_scalar(f"time/{k}", v, cur_iter)
-
-        # Checkpoint
-        if args.save_freq is not None and cur_iter % args.save_freq == 0:
-            save_ckpt(run_name, str(cur_iter))
+                    print(f'New best {k}_rate: {best_eval_metrics[k]:.4f}. Saving checkpoint.')
 
     envs.close()
+    if envs_by_task is not None:
+        for _eid, _env in envs_by_task.items():
+            _env.close()
     writer.close()

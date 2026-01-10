@@ -152,8 +152,9 @@ class DETRVAE(nn.Module):
                     lang_emb = self.lang_encoder.encode_text(lang_batch)
                 lang_emb = self.lang_proj(lang_emb.float())
                 lang_emb = lang_emb.unsqueeze(0)
+                #lang_emb = torch.zeros_like(lang_emb) #zero 실험!!! 꼭 지우기!!
             else:
-                print("Language Condition is False")
+                #print("Language Condition is False")
                 lang_emb = None
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight, lang_emb )[0] # (batch, num_queries, hidden_dim)
 

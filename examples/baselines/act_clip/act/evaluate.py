@@ -6,8 +6,14 @@ import torch
 import tqdm
 from mani_skill.utils import common
 
-def evaluate(n: int, agent, eval_envs, eval_kwargs):
-    stats, num_queries, temporal_agg, max_timesteps, device, sim_backend = eval_kwargs.values()
+def evaluate(n: int, agent, eval_envs, eval_kwargs, lang_instruction, save_name):
+    stats = eval_kwargs["stats"]
+    num_queries = eval_kwargs["num_queries"]
+    temporal_agg = eval_kwargs["temporal_agg"]
+    max_timesteps = eval_kwargs["max_timesteps"]
+    device = eval_kwargs["device"]
+    sim_backend = eval_kwargs["sim_backend"]
+    
 
     use_visual_obs = isinstance(eval_envs.single_observation_space.sample(), dict)
     delta_control = not stats
@@ -21,6 +27,12 @@ def evaluate(n: int, agent, eval_envs, eval_kwargs):
     # create action table for temporal ensembling
     action_dim = eval_envs.action_space.shape[-1]
     num_envs = eval_envs.num_envs
+
+    if lang_instruction is None:
+        eval_lang = None
+    else:
+        eval_lang = [lang_instruction] * num_envs
+
     if temporal_agg:
         query_frequency = 1
         all_time_actions = torch.zeros([num_envs, max_timesteps, max_timesteps+num_queries, action_dim], device=device)
@@ -52,8 +64,9 @@ def evaluate(n: int, agent, eval_envs, eval_kwargs):
 
             # query policy
             if ts % query_frequency == 0:
-                action_seq = agent.get_action(obs)  # (num_envs, num_queries, action_dim)
-
+                #action_seq = agent.get_action(obs)  # (num_envs, num_queries, action_dim)
+                action_seq = agent.get_action(obs, lang_instruction=eval_lang)
+                 
             # we assume ignore_terminations=True. Otherwise, some envs could be done
             # earlier, so we would need to temporally ensemble at corresponding timestep
             # for each env.
@@ -111,19 +124,23 @@ def evaluate(n: int, agent, eval_envs, eval_kwargs):
         eval_metrics[k] = np.stack(eval_metrics[k])
 
     #video log
-    save_name = "latest_eval"
     
     print(f"[DEBUG] Attempting to flush video with name: {save_name}")
     
+    # ❗ 환경에 RecordEpisode 래퍼가 있는지 확인
     try:
+        # ManiSkill 3에서는 VectorEnv 내부에 비디오 기록기가 설정되어 있어야 합니다.
         if hasattr(eval_envs, "flush_video"):
             eval_envs.flush_video(name=save_name)
-            print(f"[DEBUG] VectorEnv flush_video(name='{save_name}') successful.")
+            print(f"[DEBUG] Video saved as {save_name}.mp4")
         else:
-            eval_envs.call("flush_video") 
-            print("[DEBUG] VectorEnv.call('flush_video') executed.")
+            # 래퍼가 없는 경우를 대비해 수동 호출 시도
+            eval_envs.call("flush_video", save_name)
 
+        print(f"[DEBUG] Video flush successful.")
     except Exception as e:
-        print(f"[DEBUG] All flush attempts failed: {e}")
-
+        try:
+            eval_envs.unwrapped.flush_video(name=save_name)
+        except:
+            print("[DEBUG] Manual flush also failed. Check if RecordEpisode wrapper is used in make_eval_envs.")
     return eval_metrics
