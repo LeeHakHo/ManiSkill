@@ -62,7 +62,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     env_id: str = "PickCube-v1"
@@ -78,6 +78,8 @@ class Args:
     lang_instruction: Optional[str] = None
     """ language_instruction for clip embedding"""
     internal_instruction: bool = False
+    """ use pre-defiend language_instructions for clip embedding"""
+    is_multi_task: bool = True
     """ use pre-defiend language_instructions for clip embedding"""
     
     # ACT specific arguments
@@ -134,12 +136,22 @@ class Args:
     demo_type: Optional[str] = None
 
         
-    TASK_TEXT_MAP = {
-        "PullCube-v1": "pull the cube closer to your base",
-        "PickCube-v1": "pick the cube up into the air",
-        "PushCube-v1": "push the cube forward on the table"
-    }
-
+TASK_TEXT_MAP = {
+    "LiftPegUpright-v1": "lift the peg and stand it upright on the table",
+    "PegInsertionSide-v1": "insert the peg into the hole from the side",
+    "PickCube-v1": "pick the cube up into the air",
+    "PlaceSphere-v1": "pick up the sphere and place it into the target container",
+    "PlugCharger-v1": "plug the charger into the wall outlet",
+    "PullCube-v1": "pull the cube closer to target base",
+    "PullCubeTool-v1": "use the tool to pull the cube closer",
+    "PushCube-v1": "push the cube forward on the table",
+    "PushCube-v2": "push the cube to the target location",
+    "RaiseCube-v1": "lift the cube up to a certain height",
+    "StackCube-v1": "stack red cube on top of green cube",
+    "OpenDrawer-v1": "grasp the handle and pull the drawer open",
+    "RotateArrow-v1": "rotate the arrow lever to the target direction",
+    "ScoopParticles-v1": "use the scoop to gather particles and move them to the target"
+}
 
 class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
     """
@@ -211,7 +223,7 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
 
 class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
-    def __init__(self, data_path, num_queries, num_traj, internal_instruction, lang_instruction, include_depth=True):
+    def __init__(self, data_path, num_queries, num_traj, internal_instruction, lang_instruction, include_depth=True, is_multi_task=True):
         if data_path[-4:] == '.pkl':
             raise NotImplementedError()
         else:
@@ -228,6 +240,10 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             ]
         )  # pre-trained models from torchvision.models expect input image to be at least 224x224
 
+        self.internal_instruction = internal_instruction
+        self.lang_instruction = lang_instruction
+        self.is_multi_task = args.is_multi_task
+
         # Pre-process the observations, make them align with the obs returned by the FlattenRGBDObservationWrapper
         obs_traj_dict_list = []
         for obs_traj_dict in tqdm.tqdm(trajectories['observations'], desc='Pre-processing observations'):
@@ -237,26 +253,27 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
 
         #Hayden - multi-task
-        from collections import Counter
-        import torch
 
-        # 모든 traj의 state dim 카운트
-        dims = [o["state"].shape[1] for o in trajectories["observations"]]   # (T, D)
-        print("[STATE DIM COUNTS]", Counter(dims))
+        if self.is_multi_task:
+            from collections import Counter
 
-        target_dim = max(dims)   # 지금이면 29로 통일하는 게 보통 안전
-        print("[STATE TARGET DIM]", target_dim)
+            # 모든 traj의 state dim 카운트
+            dims = [o["state"].shape[1] for o in trajectories["observations"]]   # (T, D)
+            print("[STATE DIM COUNTS]", Counter(dims))
 
-        for o in trajectories["observations"]:
-            s = o["state"]  # (T, D)
-            d = s.shape[1]
-            if d < target_dim:
-                pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
-                o["state"] = torch.cat([s, pad], dim=1)
-            elif d > target_dim:
-                o["state"] = s[:, :target_dim]
+            target_dim = max(dims)   # 지금이면 29로 통일하는 게 보통 안전
+            print("[STATE TARGET DIM]", target_dim)
 
-        #--------------------------
+            for o in trajectories["observations"]:
+                s = o["state"]  # (T, D)
+                d = s.shape[1]
+                if d < target_dim:
+                    pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
+                    o["state"] = torch.cat([s, pad], dim=1)
+                elif d > target_dim:
+                    o["state"] = s[:, :target_dim]
+
+            #--------------------------
 
 
         self.obs_keys = list(obs_traj_dict.keys())
@@ -291,10 +308,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
 
         #Hayden - multi-task
-        self.internal_instruction = internal_instruction
-        self.lang_instruction = lang_instruction
-        
-        if self.internal_instruction:
+        if self.is_multi_task:
             self.json_data = load_json(data_path.replace(".h5", ".json"))
             self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
 
@@ -303,9 +317,6 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
     def __getitem__(self, index):
         traj_idx, ts = self.slices[index]
-
-        #Hayden - multi-task
-        TASK_TEXT_MAP = Args.TASK_TEXT_MAP  # 전역/클래스 변수로 접근
 
         if self.internal_instruction:
             env_id = self.episode_env_ids[traj_idx]
@@ -382,6 +393,19 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
                 )  # (ep_len, 1, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
                 images_depth.append(resized_depth)
         rgb = torch.stack(images_rgb, dim=1) # (ep_len, num_cams, 3, 224, 224) # still uint8
+        
+
+
+        #Hayden - multi-task padding
+        if self.is_multi_task:
+            target_num_cams = 3 # 전체 태스크 중 최대 카메라 대수
+            current_num_cams = rgb.shape[1]
+
+            if current_num_cams < target_num_cams:
+                pad_shape = (rgb.shape[0], target_num_cams - current_num_cams, 3, 224, 224)
+                padding = torch.zeros(pad_shape, dtype=rgb.dtype)
+                rgb = torch.cat([rgb, padding], dim=1)
+        
         if self.include_depth:
             depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
 
@@ -457,6 +481,8 @@ class Agent(nn.Module):
             use_lang_instruction = True
         else:
             use_lang_instruction = False
+        self.internal_instruction = args.internal_instruction
+        self.is_multi_task = args.is_multi_task
         
         self.model = DETRVAE(
             backbones,
@@ -467,6 +493,8 @@ class Agent(nn.Module):
             num_queries=args.num_queries,
             use_lang_instruction=use_lang_instruction,
         )
+
+        self.num_cams = 3
 
     def compute_loss(self, obs, action_seq, lang_instruction):
         # normalize rgb data
@@ -504,18 +532,24 @@ class Agent(nn.Module):
         if args.include_depth:
             obs['depth'] = obs['depth'].float()
 
+        #Hayden - multi-task padding
+        if self.is_multi_task:
+            current_dim = obs['state'].shape[-1]
+            if current_dim < self.state_dim:
+                pad_size = self.state_dim - current_dim
+                padding = torch.zeros(
+                    (*obs['state'].shape[:-1], pad_size), 
+                    device=obs['state'].device, 
+                    dtype=obs['state'].dtype
+                )
+                obs['state'] = torch.cat([obs['state'], padding], dim=-1)
 
-        current_dim = obs['state'].shape[-1]
-        if current_dim < self.state_dim:
-            # 부족한 만큼 0으로 채운 텐서 생성
-            pad_size = self.state_dim - current_dim
-            padding = torch.zeros(
-                (*obs['state'].shape[:-1], pad_size), 
-                device=obs['state'].device, 
-                dtype=obs['state'].dtype
-            )
-            # 가로로 합치기 -> 결과적으로 무조건 29차원이 됨
-            obs['state'] = torch.cat([obs['state'], padding], dim=-1)
+            current_num_cams = obs['rgb'].shape[1]
+            if current_num_cams < self.num_cams:
+                # [B, 1, 3, 224, 224] -> [B, 2, 3, 224, 224]
+                pad_shape = (obs['rgb'].shape[0], self.num_cams - current_num_cams, 3, 224, 224)
+                padding_rgb = torch.zeros(pad_shape, device=obs['rgb'].device, dtype=obs['rgb'].dtype)
+                obs['rgb'] = torch.cat([obs['rgb'], padding_rgb], dim=1)
 
 
         # forward pass
@@ -647,7 +681,7 @@ if __name__ == "__main__":
 
 
     # dataloader setup
-    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, internal_instruction=args.internal_instruction, lang_instruction=args.lang_instruction)
+    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, internal_instruction=args.internal_instruction, lang_instruction=args.lang_instruction, is_multi_task = args.is_multi_task)
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
@@ -811,7 +845,7 @@ if __name__ == "__main__":
                 combined_metrics = defaultdict(list)
 
                 for eid, task_envs in envs_by_task.items():
-                    eval_lang = Args.TASK_TEXT_MAP[eid] if args.internal_instruction else None
+                    eval_lang = TASK_TEXT_MAP[eid] if args.internal_instruction else None
                     
                     task_metrics = evaluate(
                         args.num_eval_episodes, ema_agent, task_envs, eval_kwargs,

@@ -33,9 +33,11 @@ def merge_trajectories(output_path: str, traj_paths: list, recompute_id: bool = 
     cnt = 0
 
     all_env_ids = set()
+    merge_summary = []
 
     for traj_path in traj_paths:
         traj_path = str(traj_path)
+        file_episode_cnt = 0
         logger.info(f"Merging {traj_path}")
 
         with h5py.File(traj_path, "r") as h5_file:
@@ -80,6 +82,17 @@ def merge_trajectories(output_path: str, traj_paths: list, recompute_id: bool = 
 
                 merged_json_data["episodes"].append(new_ep)
                 cnt += 1
+                file_episode_cnt += 1
+        merge_summary.append((cur_env_id, file_episode_cnt))
+
+    print("\n" + "="*50)    
+    print(f"{'Env ID':<30} | {'Count':<10}") # 'Directory Name'을 'Env ID'로 변경
+    print("-" * 50)
+    for task_name, count in merge_summary:
+        print(f"{task_name:<30} | {count:<10}")
+    print("-" * 50)
+    print(f"{'Total Merged':<30} | {cnt:<10}")
+    print("="*50 + "\n")
 
     merged_json_data["multi_env"] = True
     merged_json_data["env_ids"] = sorted(list(all_env_ids))

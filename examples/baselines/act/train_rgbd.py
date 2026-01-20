@@ -75,6 +75,9 @@ class Args:
     """total timesteps of the experiment"""
     batch_size: int = 256
     """the batch size of sample from the replay memory"""
+    #Hayden
+    real: bool = False
+    """use real demonstartion dataset"""
 
     # ACT specific arguments
     lr: float = 1e-4
@@ -184,6 +187,11 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
         # flatten the rest of the data which should just be state data
         observation = common.flatten_state_dict(observation, use_torch=True)
+
+        #Hayden
+        if args.real:
+            observation = observation[..., :18]
+
         ret = dict()
         if self.include_state:
             ret["state"] = observation
@@ -225,7 +233,13 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         # Pre-process the actions
         for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
-            trajectories['actions'][i] = torch.Tensor(trajectories['actions'][i])
+            act = torch.Tensor(trajectories['actions'][i])
+
+            #Hayen
+            if args.real:
+                act = act[..., :8]
+
+            trajectories['actions'][i] = act
         print('Obs/action pre-processing is done.')
 
         # When the robot reaches the goal state, its joints and gripper fingers need to remain stationary
@@ -323,7 +337,14 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
 
         # flatten the rest of the data which should just be state data
-        obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        
+        #Hayden
+        #obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        if 'extra' in obs_dict:
+            obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()}
+        else:
+            obs_dict['extra'] = {} # 데이터가 없으면 빈 딕셔너리로 처리
+        
         obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
 
         processed_obs = dict(state=obs_dict, rgb=rgb, depth=depth) if self.include_depth else dict(state=obs_dict, rgb=rgb)
@@ -366,6 +387,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 class Agent(nn.Module):
     def __init__(self, env, args):
         super().__init__()
+
         assert len(env.single_observation_space['state'].shape) == 1 # (obs_dim,)
         assert len(env.single_observation_space['rgb'].shape) == 4 # (num_cams, C, H, W)
         assert len(env.single_action_space.shape) == 1 # (act_dim,)
@@ -376,8 +398,15 @@ class Agent(nn.Module):
         print("high:", envs.single_action_space.high)
 
 
-        self.state_dim = env.single_observation_space['state'].shape[0]
-        self.act_dim = env.single_action_space.shape[0]
+        #Hayden - real dataset
+        if args.real:
+            self.state_dim = 18
+            self.act_dim = 8
+        else:
+            self.state_dim = env.single_observation_space['state'].shape[0]
+            self.act_dim = env.single_action_space.shape[0]
+
+
         self.kl_weight = args.kl_weight
         self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -508,6 +537,7 @@ if __name__ == "__main__":
         env_kwargs["max_episode_steps"] = args.max_episode_steps
     other_kwargs = None
     wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth)]
+    
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
 
     # dataloader setup

@@ -26,6 +26,7 @@ from .open_cabinet import OpenCabinetEnv
 from .colosseum_v2_versions import *
 from .pour_sphere import PourSphereEnv
 from .dual_panda_test import DualArmEmptyEnv
+
 from .hammer_nail import HammerNailEnv
 from .dual_panda_pick_cube import DualArmPickCubeEnv
 from .dual_panda_drawer_place import DualArmDrawerPlaceEnv
@@ -39,3 +40,6 @@ from .dual_panda_stack3cubes import TwoRobotStack3Cube
 from .dual_panda_pen_cap import DualArmPenCapEnv
 from .object_in_cabinet import ObjectInCabinetEnv
 from .dual_panda_push_box import DualPandaPushBoxEnv
+
+from .scoop_particles import ScoopParticlesEnv
+from .rotate_arrow import RotateArrowEnv
