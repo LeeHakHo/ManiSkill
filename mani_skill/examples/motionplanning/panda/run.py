@@ -9,10 +9,12 @@ import json
 import numpy as np
 from tqdm import tqdm
 import os.path as osp
+import mani_skill.envs
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.trajectory.merge_trajectory import merge_trajectories
-from mani_skill.examples.motionplanning.panda.solutions import solvePushCube, solvePickCube, solveStackCube, solvePegInsertionSide, solvePlugCharger, solvePullCubeTool, solveLiftPegUpright, solvePullCube, solveDrawTriangle, solveDrawSVG, solvePlaceSphere,solveOpenDrawer,solveRaiseCube, solvePlaceBookInShelf, solveHangClothingFrameOnPole, solvePickSodaFromCabinet, solveRotateArrow, solveScoopParticles, solvePickLightbulbPlaceSocket, solvePlaceAppleOnPlate,solvePickBananaFromOpenDrawer,solvePlaceDishInRack,solvePickDishFromRack,solvePourSphere
+from mani_skill.examples.motionplanning.panda.solutions import solvePushCube, solvePickCube, solveStackCube, solvePegInsertionSide, solvePlugCharger, solvePullCubeTool, solveLiftPegUpright, solvePullCube, solveDrawTriangle, solveDrawSVG, solvePlaceSphere,solveOpenDrawer,solveRaiseCube, solvePlaceBookInShelf, solveHangClothingFrameOnPole, solvePickSodaFromCabinet, solveRotateArrow, solveScoopBanana, solvePickLightbulbPlaceSocket, solvePlaceAppleOnPlate, solveCookItemInPan, solvePickBananaFromOpenDrawer,solvePlaceDishInRack,solvePickDishFromRack,solvePourSphere, solveHammerNail, solveOpenCabinet, solveObjectInCabinet
 from mani_skill.envs.distraction_set import DISTRACTION_SETS
+from mani_skill.examples.motionplanning.dual_panda.solutions import solveBimanualLiftPot, solveBimanualLiftTray, solveBimanualPassBottle, solveBimanualPourPot, solveBimanualPassCube, solveBimanualDrawerPlace, solveBimanualPourPot, solveBimanualDrawerOpen, solveBimanualPenCap, solveBimanualPushBox, solveBimanualStack3Cubes, solveBimanualStackCubes, solveBimanualThreading
 
 MP_SOLUTIONS = {
     "DrawTriangle-v1": solveDrawTriangle,
@@ -38,29 +40,48 @@ MP_SOLUTIONS = {
     "HangClothingFrameOnPole-v1": solveHangClothingFrameOnPole,
     "PickSodaFromCabinet-v1": solvePickSodaFromCabinet,
     "RotateArrow-v1": solveRotateArrow,
-    "ScoopParticles-v1": solveScoopParticles,
+    "ScoopBanana-v1": solveScoopBanana,
     "PickBananaFromOpenDrawer-v1": solvePickBananaFromOpenDrawer,    # new
     "PickLightbulbPlaceSocket-v1": solvePickLightbulbPlaceSocket, #new
     "PlaceAppleOnPlate-v1": solvePlaceAppleOnPlate, # new
+    "CookItemInPan-v1": solveCookItemInPan,
     "PlaceDishInRack-v1": solvePlaceDishInRack, # new
     "PickDishFromRack-v1": solvePickDishFromRack, # new
     "PourSphere-v1": solvePourSphere, # new
+    "HammerNail-v1": solveHammerNail,
+    "OpenCabinet-v1": solveOpenCabinet,
+    "ObjectInCabinet-v1": solveObjectInCabinet,
+
+
+    # Bimanual
+    "DualArmPickCube-v0": solveBimanualPassCube,
+    "DualArmLiftPot-v0": solveBimanualLiftPot,
+    "DualArmLiftTray-v0": solveBimanualLiftTray,
+    "DualArmPickBottle-v0": solveBimanualPassBottle,
+    "DualArmPourPot-v0": solveBimanualPourPot,
+    "DualArmDrawerPlace-v0": solveBimanualDrawerPlace,
+    "DualArmDrawerOpen-v0": solveBimanualDrawerOpen,
+    "DualArmPenCap-v0": solveBimanualPenCap,
+    "DualArmPushBox-v1": solveBimanualPushBox,
+    "TwoRobotStack3Cube-v1": solveBimanualStack3Cubes,
+    "TwoRobotStackCube-v1": solveBimanualStackCubes,
+    "DualPandaThreading-v0": solveBimanualThreading
 }
 
 """
-ENV_ID=PickCube-v1
+ENV_ID=ScoopBanana-v1
 DISTRACTION_SET=none
 # ^ Must be one of: none, all, distractor_object_cfg, MO_color_cfg, MO_texture_cfg, RO_color_cfg, RO_texture_cfg, table_color_cfg, table_texture_cfg, camera_pose_cfg
 
 python mani_skill/examples/motionplanning/panda/run.py \
     --env-id ${ENV_ID} \
-    --num-traj 60 \
+    --num-traj 100 \
     --distraction-set ${DISTRACTION_SET} \
-    --num-procs 10 \
+    --num-procs 1 \
     --reward-mode "sparse" \
     --random-seed \
     --only-count-success \
-    --traj-name "trajectory" \
+    --traj-name "trajectory" --vis \
     --save-video      # <- optional
     # --vis           # <- optional
 

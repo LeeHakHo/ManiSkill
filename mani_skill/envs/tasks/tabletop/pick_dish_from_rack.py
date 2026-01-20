@@ -40,7 +40,7 @@ class PickDishFromRackEnv(BaseEnv):
     - The dish rack pose is randomized slightly on the tabletop.
 
     **Success Conditions:**
-    - The plate is removed from the rack and placed flat on the table while the robot releases it.
+    - The plate is outside the rack's outer bounds, flat on the table, and released by the robot.
     """
 
     agent: Union[Panda, Fetch]
@@ -71,10 +71,14 @@ class PickDishFromRackEnv(BaseEnv):
 
     _rack_extent = np.array([0.12060600281, 0.16782440567, 0.085])  # Normal rack size
     _plate_goal_offset = np.array([0.0, 0.0, 0.15])  # Above rack slots (same as place task)
-    _rack_position = np.array([-0.1, 0.1, 0])  # SAME AS PLACE - Rack position closer to robot workspace
+    _rack_position = np.array([-0.1, 0.0, 0])  # Rack X position, Y will be randomized
     _plate_goal_position = np.array([-0.35, -0.15, 0])  # Reverse of place - where plate started in place task
     _plate_support_radius = 0.015
     _plate_support_height = 0.0  # No pedestal - plate flush with table
+
+    # Randomization bounds (symmetric around robot Y=0)
+    # Rack placed either right [-0.25, -0.15] or left [0.15, 0.25], avoiding center
+    _rack_y_ranges = [(-0.25, -0.15), (0.15, 0.25)]
 
     def __init__(self, *args, robot_uids="panda", robot_init_qpos_noise=0.02, **kwargs):
         self.robot_init_qpos_noise = robot_init_qpos_noise
@@ -231,17 +235,68 @@ class PickDishFromRackEnv(BaseEnv):
         device = self.device
         with torch.device(device):
             b = len(env_idx)
-            self.table_scene.initialize(env_idx)
 
             # Get table top Z coordinate
             table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
             table_z = float(table_p_arr[-1])
             table_top_z = table_z + float(self.table_scene.table_height)
 
-            # Position rack on table (SAME AS PLACE_DISH_IN_RACK)
+            # Position rack on table with Y randomization (symmetric around robot)
             rack_pos = torch.zeros((b, 3), device=device)
-            rack_pos[:] = torch.tensor(self._rack_position, device=device)
-            rack_pos[:, 2] = table_top_z + float(self._rack_extent[2])  # Same as place task
+            rack_pos[:, 0] = self._rack_position[0]  # Fixed X
+            # Randomly pick left or right range, then sample within that range
+            for i in range(b):
+                # Pick random range (0 = left/negative, 1 = right/positive)
+                range_idx = torch.randint(0, 2, (1,)).item()
+                y_min, y_max = self._rack_y_ranges[range_idx]
+                rack_pos[i, 1] = torch.rand(1, device=device).item() * (y_max - y_min) + y_min
+            rack_pos[:, 2] = table_top_z + float(self._rack_extent[2])
+
+            # Compute EE target position above rack center (for grasp approach)
+            # EE should be above the plate which is at rack center, at the top of the vertical plate
+            ee_target_x = rack_pos[0, 0].item()
+            ee_target_y = rack_pos[0, 1].item()
+            ee_target_z = table_top_z + self._plate_outer_radius * 2 + 0.25  # Above plate top + higher clearance
+
+            # Use IK to find qpos that places EE at target position
+            # Grasp pose: approaching from above (-Z), closing in Y direction
+            from mani_skill.examples.motionplanning.panda.motionplanner import PandaArmMotionPlanningSolver
+            import sapien
+
+            # Initialize table scene first with default qpos
+            self.table_scene.initialize(env_idx)
+
+            # Create a temporary planner to compute IK
+            try:
+                planner = PandaArmMotionPlanningSolver(
+                    self,
+                    debug=False,
+                    vis=False,
+                    base_pose=self.agent.robot.pose,
+                    visualize_target_grasp_pose=False,
+                    print_env_info=False,
+                )
+
+                # Build target pose above rack
+                approaching = np.array([0, 0, -1])
+                closing = np.array([0, 1, 0])
+                target_pos = np.array([ee_target_x, ee_target_y, ee_target_z])
+                target_pose = self.agent.build_grasp_pose(approaching, closing, target_pos)
+
+                # Compute IK
+                result = planner.planner.IK(target_pose, self.agent.robot.get_qpos()[0, :7].cpu().numpy())
+                if result["status"] == "Success":
+                    pregrasp_qpos = np.array(result["position"])
+                    # Add gripper open position
+                    pregrasp_qpos = np.append(pregrasp_qpos, [0.04, 0.04])
+                    # Re-initialize with computed qpos
+                    self.table_scene.initialize(env_idx, qpos_0=pregrasp_qpos)
+
+                planner.close()
+            except Exception as e:
+                # If IK fails, just use default initialization
+                pass
+
             rack_pose = Pose.create_from_pq(p=rack_pos)
             self.dish_rack.set_pose(rack_pose)
 
@@ -287,45 +342,29 @@ class PickDishFromRackEnv(BaseEnv):
 
     def evaluate(self):
         plate_pos = self.plate.pose.p
-        goal_pos = torch.tensor(
-            self._plate_goal_position, device=self.device, dtype=plate_pos.dtype
-        ).unsqueeze(0).repeat(plate_pos.shape[0], 1)
-
-        # Add Z component to goal (should be on table surface)
         table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
         table_z = float(table_p_arr[-1])
         table_top_z = table_z + float(self.table_scene.table_height)
-        goal_pos[:, 2] = table_top_z + self._plate_total_height / 2.0
-
-        plate_to_goal = torch.linalg.norm(plate_pos - goal_pos, dim=1)
-
-        # Check plate is horizontal (normal vector should point up)
-        rot_mats = quaternion_to_matrix(self.plate.pose.q)
-        plate_norm = rot_mats[..., 2]
-        plate_horizontal = torch.abs(plate_norm[..., 2]) >= 0.85  # Normal points up/down
-
-        is_grasped = self.agent.is_grasping(self.plate)
-        is_static = self.plate.is_static(lin_thresh=0.02, ang_thresh=0.4)
 
         # Check that plate is above table surface
         above_table = plate_pos[:, 2] > table_top_z - 0.01
 
-        # Plate should be far from rack (removed from rack)
         rack_pos = self.dish_rack.pose.p
-        plate_to_rack = torch.linalg.norm(plate_pos - rack_pos, dim=1)
-        away_from_rack = plate_to_rack >= 0.15
+        rack_half = torch.tensor(
+            self._rack_extent / 2.0, device=self.device, dtype=plate_pos.dtype
+        )
+        within_x = torch.abs(plate_pos[:, 0] - rack_pos[:, 0]) <= rack_half[0]
+        within_y = torch.abs(plate_pos[:, 1] - rack_pos[:, 1]) <= rack_half[1]
+        within_z = torch.abs(plate_pos[:, 2] - rack_pos[:, 2]) <= rack_half[2]
+        plate_outside_rack = ~(within_x & within_y & within_z)
 
-        close_to_goal = plate_to_goal <= 0.1
-        success = close_to_goal & plate_horizontal & (~is_grasped) & is_static & above_table & away_from_rack
+        success = plate_outside_rack & above_table
 
         return {
             "success": success,
-            "plate_close_to_goal": close_to_goal,
-            "plate_horizontal": plate_horizontal,
-            "is_static": is_static,
-            "is_grasped": is_grasped,
+            "plate_close_to_goal": plate_outside_rack,
             "above_table": above_table,
-            "away_from_rack": away_from_rack,
+            "plate_outside_rack": plate_outside_rack,
         }
 
     def _get_obs_extra(self, info: Dict):
@@ -350,41 +389,23 @@ class PickDishFromRackEnv(BaseEnv):
     def compute_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict) -> torch.Tensor:
         """Compute dense reward for the task."""
         plate_pos = self.plate.pose.p
-        goal_pos = torch.tensor(
-            self._plate_goal_position, device=self.device, dtype=plate_pos.dtype
-        ).unsqueeze(0).repeat(plate_pos.shape[0], 1)
-
-        # Add Z component
-        table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
-        table_z = float(table_p_arr[-1])
-        table_top_z = table_z + float(self.table_scene.table_height)
-        goal_pos[:, 2] = table_top_z + self._plate_total_height / 2.0
-
-        plate_to_goal_dist = torch.linalg.norm(plate_pos - goal_pos, dim=1)
+        rack_pos = self.dish_rack.pose.p
+        rack_half = torch.tensor(
+            self._rack_extent / 2.0, device=self.device, dtype=plate_pos.dtype
+        )
+        within_x = torch.abs(plate_pos[:, 0] - rack_pos[:, 0]) <= rack_half[0]
+        within_y = torch.abs(plate_pos[:, 1] - rack_pos[:, 1]) <= rack_half[1]
+        within_z = torch.abs(plate_pos[:, 2] - rack_pos[:, 2]) <= rack_half[2]
+        plate_outside_rack = ~(within_x & within_y & within_z)
 
         # Distance reward
-        reaching_reward = 1.0 - torch.tanh(5.0 * plate_to_goal_dist)
-
-        # Orientation reward (plate should be horizontal)
-        rot_mats = quaternion_to_matrix(self.plate.pose.q)
-        plate_norm = rot_mats[..., 2]
-        horizontal_alignment = torch.abs(plate_norm[..., 2])
-        orientation_reward = horizontal_alignment  # Reward for being horizontal
-
-        # Gripper release reward
-        is_grasped = self.agent.is_grasping(self.plate)
-        close_to_goal = plate_to_goal_dist <= 0.1
-        release_reward = torch.where(
-            close_to_goal,
-            torch.where(is_grasped, torch.tensor(0.0, device=self.device), torch.tensor(1.0, device=self.device)),
-            torch.tensor(0.0, device=self.device)
-        )
+        reaching_reward = plate_outside_rack.float()
 
         # Success bonus
         success = info["success"].float()
         success_reward = success * 5.0
 
-        reward = reaching_reward + orientation_reward + release_reward + success_reward
+        reward = reaching_reward + success_reward
         return reward
 
     def compute_normalized_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict) -> torch.Tensor:

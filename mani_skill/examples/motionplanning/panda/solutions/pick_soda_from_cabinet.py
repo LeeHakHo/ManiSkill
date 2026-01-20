@@ -69,7 +69,7 @@ def solve(env: PickSodaFromCabinetEnv, seed=None, debug=False, vis=False):
     # -------------------------------------------------------------------------- #
     # Grasp
     # -------------------------------------------------------------------------- #
-    res = planner.move_to_pose_with_RRTConnect(grasp_pose)
+    res = planner.move_to_pose_with_RRTStar(grasp_pose)
     if res == -1: return res
     planner.close_gripper(gripper_state=-0.6)
 
@@ -113,9 +113,11 @@ def solve(env: PickSodaFromCabinetEnv, seed=None, debug=False, vis=False):
     #     p=[0, 0, 0],
     #     q=rotation_quat
     # ) * sapien.Pose([0, 0, -0.10])
-    final_pose = sapien.Pose(p=[-0.053, -0.160, 0.1],q=grasp_pose.q)
-    res = planner.move_to_pose_with_RRTStar(final_pose)
-    if res == -1: return res
+    final_pose = sapien.Pose(p=[back_pose.p[0], back_pose.p[1], 0.1],q=grasp_pose.q)
+    res = planner.move_to_pose_with_screw(final_pose)
+    if res == -1: 
+        res = planner.move_to_pose_with_RRTStar(final_pose)
+        if res == -1: return res
     # -------------------------------------------------------------------------- #
     # Lower
     # -------------------------------------------------------------------------- #
@@ -125,7 +127,9 @@ def solve(env: PickSodaFromCabinetEnv, seed=None, debug=False, vis=False):
 
     planner.open_gripper()
     res = planner.move_to_pose_with_screw(final_pose)
-    if res == -1: return res
+    if res == -1: 
+        res = planner.move_to_pose_with_RRTStar(final_pose)
+        if res == -1: return res
 
     planner.close()
     
