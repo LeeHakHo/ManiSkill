@@ -2,7 +2,7 @@ import numpy as np
 import sapien
 import gymnasium as gym
 import time
-from mani_skill.envs.tasks.tabletop.scoop_particles import ScoopBananaEnv
+from mani_skill.envs.tasks.tabletop.scoop_banana import ScoopBananaEnv
 from mani_skill.examples.motionplanning.panda.motionplanner import PandaArmMotionPlanningSolver
 from mani_skill.examples.motionplanning.base_motionplanner.utils import compute_grasp_info_by_obb, get_actor_obb
 
@@ -74,6 +74,13 @@ def solve(env: ScoopBananaEnv, seed=None, debug=False, vis=False):
     # if res == -1: return res
 
     ball_pos = env.ball.pose.sp.p
+    
+    approach_offset = sapien.Pose([-0.07, 0, 0.0])
+    approach_pose = sapien.Pose(ball_pos)*approach_offset
+    approach_pose.set_q(grasp_pose.q)
+    res = planner.move_to_pose_with_screw(approach_pose)
+    if res == -1: return res
+    
     approach_offset = sapien.Pose([-0.03, 0, 0.0])
     approach_pose = sapien.Pose(ball_pos)*approach_offset
     approach_pose.set_q(grasp_pose.q)

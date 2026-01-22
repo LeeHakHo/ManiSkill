@@ -18,11 +18,12 @@ from .place_book_in_shelf import solve as solvePlaceBookInShelf
 from .hang_clothing_frame_on_pole import solve as solveHangClothingFrameOnPole
 from .pick_soda_from_cabinet import solve as solvePickSodaFromCabinet
 from .rotate_arrow import solve as solveRotateArrow
-from .scoop_particles import solve as solveScoopBanana
+from .scoop_banana import solve as solveScoopBanana
 from .place_lightbulb_socket import solve as solvePickLightbulbPlaceSocket
 from .place_apple_on_plate import solve as solvePlaceAppleOnPlate
 from .cook_item_in_pan import solve as solveCookItemInPan
 from .pick_banana_from_open_drawer import solve as solvePickBananaFromOpenDrawer
+from .pick_cube_from_drawer import solve as solvePickCubeFromDrawer
 # new
 from .place_sphere import solve as solvePlaceSphere
 from .place_dish_in_rack import solve as solvePlaceDishInRack
