@@ -60,8 +60,18 @@ class TwoRobotStack3Cube(BaseEnv):
 
     @property
     def _default_sensor_configs(self):
-        pose = sapien_utils.look_at(eye=[0.3, 0, 0.6], target=[-0.1, 0, 0.1])
-        return [CameraConfig("base_camera", pose, 128, 128, np.pi / 2, 0.01, 100)]
+        pose = sapien_utils.look_at(eye=[0.75, 0.0, 0.5 + 0.83], target=[-0.2, 0, 0.0 + 0.83]) # 0.83: height of the table
+        return [
+            CameraConfig(
+                "base_camera",
+                pose=pose,
+                width=128,
+                height=128,
+                fov=np.pi / 3,
+                near=0.01,
+                far=10,
+            )
+        ]
 
     @property
     def _default_human_render_camera_configs(self):
