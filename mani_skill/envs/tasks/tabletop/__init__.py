@@ -44,3 +44,5 @@ from .dual_panda_push_box import DualPandaPushBoxEnv
 
 from .scoop_particles import ScoopParticlesEnv
 from .rotate_arrow import RotateArrowEnv
+from .pick_soda_from_cabinet import PickSodaFromCabinetEnv
+from .book_in_shelf import PlaceBookEnv
