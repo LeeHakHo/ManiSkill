@@ -237,7 +237,9 @@ class PickDishFromRackEnv(BaseEnv):
             b = len(env_idx)
 
             # Get table top Z coordinate
-            table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+            #table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+            table_p_arr = np.asarray(self.table_scene.table.pose.p.cpu()).ravel()
+
             table_z = float(table_p_arr[-1])
             table_top_z = table_z + float(self.table_scene.table_height)
 
@@ -342,7 +344,9 @@ class PickDishFromRackEnv(BaseEnv):
 
     def evaluate(self):
         plate_pos = self.plate.pose.p
-        table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+        #table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+        table_p_arr = np.asarray(self.table_scene.table.pose.p.cpu()).ravel()
+        
         table_z = float(table_p_arr[-1])
         table_top_z = table_z + float(self.table_scene.table_height)
 

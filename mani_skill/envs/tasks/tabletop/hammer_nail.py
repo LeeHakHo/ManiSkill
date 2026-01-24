@@ -399,6 +399,8 @@ class HammerNailEnv(BaseEnv):
                 )
             builder.set_initial_pose(sapien.Pose(q=nail_quat))
             nail = builder.build_dynamic(name=spec.name)
+            nail.set_locked_motion_axes([True, False, True, True, True, True])
+            
             nail.set_linear_damping(2.0)
             nail.set_angular_damping(5.0)
             self.nails.append(nail)
@@ -492,12 +494,22 @@ class HammerNailEnv(BaseEnv):
         self._choose_hammer_orientation()
         self._apply_hammer_z_rotation(-90.0)
         self._update_hammer_rest_height()
-        self.hammer.set_pose(
-            sapien.Pose(
-                p=self._hammer_rest_center.tolist(),
-                q=self._hammer_orientation.tolist(),
-            )
+
+        # self.hammer.set_pose(
+        #     sapien.Pose(
+        #         p=self._hammer_rest_center.tolist(),
+        #         q=self._hammer_orientation.tolist(),
+        #     )
+        # )
+        final_pose = sapien.Pose(
+            p=self._hammer_rest_center.tolist(),
+            q=self._hammer_orientation.tolist(),
         )
+        try:
+            self.hammer.set_pose(final_pose)
+        except IndexError:
+            for obj in self.hammer._objs:
+                obj.set_pose(final_pose)
 
     def _apply_hammer_z_rotation(self, degrees: float):
         angle = np.deg2rad(degrees) * 0.5
@@ -552,7 +564,14 @@ class HammerNailEnv(BaseEnv):
         best_q = candidates[0]
         best_extent = None
         for q in candidates:
-            self.hammer.set_pose(sapien.Pose(p=[0.0, 0.0, 0.0], q=q.tolist()))
+
+            #self.hammer.set_pose(sapien.Pose(p=[0.0, 0.0, 0.0], q=q.tolist()))
+            try:
+                self.hammer.set_pose(sapien.Pose(p=[0.0, 0.0, 0.0], q=q.tolist()))
+            except IndexError:
+                # GPU 데이터가 아직 준비 안 된 경우, PhysX 객체에 직접 접근하여 설정
+                self.hammer._objs[0].set_pose(sapien.Pose(p=[0.0, 0.0, 0.0], q=q.tolist()))
+
             aabb = render_comp.compute_global_aabb_tight()
             z_extent = float(aabb[1, 2] - aabb[0, 2])
             if best_extent is None or z_extent < best_extent:
@@ -569,9 +588,16 @@ class HammerNailEnv(BaseEnv):
         if render_comp is None:
             return
 
-        self.hammer.set_pose(
-            sapien.Pose(p=[0.0, 0.0, 0.0], q=self._hammer_orientation.tolist())
-        )
+        # self.hammer.set_pose(
+        #     sapien.Pose(p=[0.0, 0.0, 0.0], q=self._hammer_orientation.tolist())
+        # )
+        pose = sapien.Pose(p=[0.0, 0.0, 0.0], q=self._hammer_orientation.tolist())
+        try:
+            self.hammer.set_pose(pose)
+        except IndexError:
+            for obj in self.hammer._objs:
+                obj.set_pose(pose)
+
         aabb = render_comp.compute_global_aabb_tight()
         # Align the hammer bottom with the table surface (z=0) with a small clearance.
         self._hammer_rest_center[2] = float(-aabb[0, 2] + 1e-3)
@@ -623,7 +649,7 @@ class HammerNailEnv(BaseEnv):
 
                 # Lock X and Z linear movement, allow only Y movement, lock all rotations
                 # [lock_x, lock_y, lock_z, lock_rot_x, lock_rot_y, lock_rot_z]
-                nail.set_locked_motion_axes(torch.tensor([[True, False, True, True, True, True]] * b, device=self.device))
+                #nail.set_locked_motion_axes(torch.tensor([[True, False, True, True, True, True]] * b, device=self.device))
 
             # Randomize hammer position
             hammer_pos = self._hammer_rest_center.to(self.device).unsqueeze(0).repeat(b, 1)

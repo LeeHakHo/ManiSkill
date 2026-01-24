@@ -1,4 +1,4 @@
-name: act-clip
+name: act
 channels:
   - defaults
 dependencies:
