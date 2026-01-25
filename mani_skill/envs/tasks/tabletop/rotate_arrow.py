@@ -163,10 +163,21 @@ class RotateArrowEnv(BaseEnv):
 #             # rotation for pose is just random rotation around z axis
 #             # z axis rotation euler to quaternion = [cos(theta/2),0,0,sin(theta/2)]
 
-            q_euler_angle = torch.rand(b) * (torch.pi/6) - torch.pi/12
-            q = torch.zeros((b, 4))
-            q = euler2quat(np.pi/2, 0, q_euler_angle)
+            # q_euler_angle = torch.rand(b) * (torch.pi/6) - torch.pi/12
+            # q = torch.zeros((b, 4))
+            # q = euler2quat(np.pi/2, 0, q_euler_angle)
+            # self.init_angle = q_euler_angle
+
+            q_euler_angle = torch.rand(b, device=self.device) * (torch.pi/6) - torch.pi/12
             self.init_angle = q_euler_angle
+            angles_np = q_euler_angle.detach().cpu().numpy()
+            q_np = np.stack(
+                [euler2quat(np.pi/2, 0.0, float(a)) for a in angles_np],
+                axis=0,
+            )  # (b, 4)
+            q = torch.as_tensor(q_np, device=self.device, dtype=torch.float32)
+
+
             obj_pose = Pose.create_from_pq(p=target_region_xyz, q=q)
             self.arrow.set_pose(obj_pose)
 

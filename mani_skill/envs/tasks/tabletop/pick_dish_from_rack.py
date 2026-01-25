@@ -18,7 +18,7 @@ from mani_skill.utils.registration import register_env
 from mani_skill.utils.scene_builder.table import TableSceneBuilder
 from mani_skill.utils.structs.pose import Pose
 from mani_skill.utils.structs.types import GPUMemoryConfig, SimConfig
-
+from sapien.physx import PhysxRigidDynamicComponent
 try:  # Optional dependency for convex decomposition
     import coacd  # noqa: F401
 
@@ -187,7 +187,14 @@ class PickDishFromRackEnv(BaseEnv):
         )
 
         builder.initial_pose = sapien.Pose()
-        return builder.build(name="plate")
+
+        plate = builder.build(name="plate")
+        for obj in plate._objs:
+            # Entity에서 물리 컴포넌트를 찾습니다.
+            physx_comp = obj.find_component_by_type(PhysxRigidDynamicComponent)
+            if physx_comp:
+                physx_comp.kinematic = True
+        return plate
 
 
     def _build_rack(self):
@@ -237,7 +244,9 @@ class PickDishFromRackEnv(BaseEnv):
             b = len(env_idx)
 
             # Get table top Z coordinate
-            table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+            #table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+            table_p_arr = np.asarray(self.table_scene.table.pose.p.cpu()).ravel()
+
             table_z = float(table_p_arr[-1])
             table_top_z = table_z + float(self.table_scene.table_height)
 
@@ -322,7 +331,7 @@ class PickDishFromRackEnv(BaseEnv):
             self.plate.set_pose(plate_pose)
 
             # Keep the plate fixed in the rack until it is grasped
-            self.plate.disable_gravity = True
+            #self.plate.disable_gravity = True
 
             # Zero velocities so the plate remains stationary until grasped
             zero_velocity = torch.zeros((b, 3), device=device)
@@ -336,13 +345,20 @@ class PickDishFromRackEnv(BaseEnv):
             not self._plate_gravity_enabled
             and bool(self.agent.is_grasping(self.plate).any())
         ):
+
+            for obj in self.plate._objs:
+                physx_comp = obj.find_component_by_type(PhysxRigidDynamicComponent)
+                if physx_comp:
+                    physx_comp.kinematic = False
             self.plate.disable_gravity = False
             self._plate_gravity_enabled = True
         return obs
 
     def evaluate(self):
         plate_pos = self.plate.pose.p
-        table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+        #table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+        table_p_arr = np.asarray(self.table_scene.table.pose.p.cpu()).ravel()
+        
         table_z = float(table_p_arr[-1])
         table_top_z = table_z + float(self.table_scene.table_height)
 
