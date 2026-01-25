@@ -141,8 +141,11 @@ class PlaceBookEnv(BaseEnv):
             # [0.748, 0.279, -0.464, 0.384] - q for other side facing book
             self.book_A.set_pose(Pose.create_from_pq(p=xyz.clone(), q=torch.tensor([0.06, -0.162, -0.296, 0.940]).repeat(b,1)))
 
-            xyz[..., 0] = 0.293 + float(torch.rand(b)*0.05)
-            xyz[..., 1] = -0.1 + float(torch.rand(b)*0.1)
+            #xyz[..., 0] = 0.293 + float(torch.rand(b)*0.05)
+            #xyz[..., 1] = -0.1 + float(torch.rand(b)*0.1)
+            xyz[..., 0] = 0.293 + (torch.rand(b, device=self.device) * 0.05)
+            xyz[..., 1] = -0.1 + (torch.rand(b, device=self.device) * 0.1)
+
             xyz[..., 2] = 0
             self.shelf.set_pose(Pose.create_from_pq(p=xyz, q=[-0.5, -0.5, 0.5, 0.5]))
             # xyz[:, :2] = cubeB_xy

@@ -294,9 +294,12 @@ class CookItemInPanEnv(BaseEnv):
             env=self, robot_init_qpos_noise=self.robot_init_qpos_noise
         )
         self.table_scene.build()
-        self.table_surface_z = float(
-            self.table_scene.table.pose.p[0, 2] + self.table_scene.table_height
-        )
+
+        # self.table_surface_z = float(
+        #     self.table_scene.table.pose.p[0, 2] + self.table_scene.table_height
+        # )
+        table_p = self.table_scene.table.initial_pose.p
+        self.table_surface_z = float(table_p[...,2][0] + self.table_scene.table_height)
 
         self.stove = self._build_stove()
         self.pan = self._build_pan()
