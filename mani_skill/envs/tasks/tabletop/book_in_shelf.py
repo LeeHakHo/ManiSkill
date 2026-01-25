@@ -73,7 +73,7 @@ class PlaceBookEnv(BaseEnv):
             os.path.join(PACKAGE_ASSET_DIR, 'book_in_shelf/BookShelf.glb'),
             sapien.Pose(p=[0.293, -0.1, 0], q=[-0.5, -0.5, 0.5, 0.5]), 
             name="custom_glb_shelf",
-            type="static",
+            type="kinematic",
             is_shelf=True
         )
 
@@ -110,6 +110,8 @@ class PlaceBookEnv(BaseEnv):
         builder.set_initial_pose(pose)
         if type=="dynamic":
             actor = builder.build_dynamic(name)
+        elif type == "kinematic":
+            actor = builder.build_kinematic(name)
         else:
             actor = builder.build_static(name)
         return actor
