@@ -283,7 +283,13 @@ class PlaceDishInRackEnv(BaseEnv):
 
             # Raise table to be reachable
             table_pose = self.table_scene.table.pose
-            table_p = np.asarray(table_pose.p).ravel()
+            #table_p = np.asarray(table_pose.p).ravel()
+            table_p = table_pose.p
+            if torch.is_tensor(table_p):
+                table_p = table_p.cpu().numpy().ravel()
+            else:
+                table_p = np.asarray(table_p).ravel()
+
             table_q = table_pose.q
             if torch.is_tensor(table_q):
                 table_q = table_q.cpu().numpy().ravel()
@@ -291,14 +297,24 @@ class PlaceDishInRackEnv(BaseEnv):
                 table_q = np.asarray(table_q).ravel()
 
             # Apply height offset to bring table into robot's workspace
-            new_table_p = np.array([table_p[0], table_p[1], table_p[2] + self.table_height_offset], dtype=np.float32)
-            new_table_q = np.array(table_q, dtype=np.float32)
-            self.table_scene.table.set_pose(sapien.Pose(p=new_table_p, q=new_table_q))
+            #new_table_p = np.array([table_p[0], table_p[1], table_p[2] + self.table_height_offset], dtype=np.float32)
+            #new_table_q = np.array(table_q, dtype=np.float32)
+            #self.table_scene.table.set_pose(sapien.Pose(p=new_table_p, q=new_table_q))
+
+            new_p = table_pose.p.clone()
+            new_q = table_pose.q.clone()
+            new_p[..., 2] += self.table_height_offset
+            from mani_skill.utils.structs.pose import Pose
+            new_pose = Pose.create_from_pq(p=new_p, q=new_q)
+            self.table_scene.table.set_pose(new_pose)
 
             # Compute table top Z for placing objects
-            table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
-            table_z = float(table_p_arr[-1])
-            table_top_z = table_z + float(self.table_scene.table_height)
+            # table_p_arr = np.asarray(self.table_scene.table.pose.p).ravel()
+            # table_z = float(table_p_arr[-1])
+            # table_top_z = table_z + float(self.table_scene.table_height)
+
+            table_z = self.table_scene.table.pose.p[..., 2]
+            table_top_z = table_z + self.table_scene.table_height
 
             # Set plate position (using pre-computed random values)
             xyz = torch.zeros((b, 3), device=device)

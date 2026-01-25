@@ -32,15 +32,22 @@ def merge_trajectories(output_path: str, traj_paths: list, recompute_id: bool = 
     merged_json_data = {"episodes": []}
     cnt = 0
 
+    all_env_ids = set()
+    merge_summary = []
+
     for traj_path in traj_paths:
         traj_path = str(traj_path)
-        logger.info(f"Merging{traj_path}")
+        file_episode_cnt = 0
+        logger.info(f"Merging {traj_path}")
 
         with h5py.File(traj_path, "r") as h5_file:
             json_data = load_json(traj_path.replace(".h5", ".json"))
-            
-            # For keys other than episodes, keep the first data
-            # and check if there is any conflict with other data.
+
+
+            cur_env_id = json_data.get("env_info", {}).get("env_id", "Unknown-v1")
+            all_env_ids.add(cur_env_id)
+
+
             for key, value in json_data.items():
                 if key == "episodes":
                     continue
@@ -48,28 +55,47 @@ def merge_trajectories(output_path: str, traj_paths: list, recompute_id: bool = 
                     merged_json_data[key] = value
                 else:
                     if merged_json_data[key] != value:
-                        logger.warning(f"Conflict detected for key {key} in {traj_path}: {merged_json_data[key]} != {value}")
+                        logger.warning(
+                            f"Conflict detected for key {key} in {traj_path}: "
+                            f"{merged_json_data[key]} != {value}"
+                        )
 
-            # Merge episodes
+
             for ep in json_data["episodes"]:
-                episode_id = ep["episode_id"]
-                traj_id = f"traj_{episode_id}"
+                old_episode_id = ep["episode_id"]
+                old_traj_id = f"traj_{old_episode_id}"
 
-                # Copy h5 data
-                if recompute_id:
-                    new_traj_id = f"traj_{cnt}"
-                else:
-                    new_traj_id = traj_id
-
+                new_traj_id = f"traj_{cnt}" if recompute_id else old_traj_id
                 assert new_traj_id not in merged_h5_file, new_traj_id
-                h5_file.copy(traj_id, merged_h5_file, new_traj_id)
+                h5_file.copy(old_traj_id, merged_h5_file, new_traj_id)
 
-                # Copy json data
+
+                new_ep = dict(ep)
                 if recompute_id:
-                    ep["episode_id"] = cnt
-                merged_json_data["episodes"].append(ep)
+                    new_ep["episode_id"] = cnt
 
+                new_ep["env_id"] = cur_env_id
+
+
+                new_ep["source_traj_path"] = traj_path
+                new_ep["source_episode_id"] = old_episode_id
+
+                merged_json_data["episodes"].append(new_ep)
                 cnt += 1
+                file_episode_cnt += 1
+        merge_summary.append((cur_env_id, file_episode_cnt))
+
+    print("\n" + "="*50)    
+    print(f"{'Env ID':<30} | {'Count':<10}") # 'Directory Name'을 'Env ID'로 변경
+    print("-" * 50)
+    for task_name, count in merge_summary:
+        print(f"{task_name:<30} | {count:<10}")
+    print("-" * 50)
+    print(f"{'Total Merged':<30} | {cnt:<10}")
+    print("="*50 + "\n")
+
+    merged_json_data["multi_env"] = True
+    merged_json_data["env_ids"] = sorted(list(all_env_ids))
 
     merged_h5_file.close()
     dump_json(merged_json_path, merged_json_data, indent=2)

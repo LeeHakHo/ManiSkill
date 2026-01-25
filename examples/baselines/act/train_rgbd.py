@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 import tyro
 from mani_skill.envs.distraction_set import DISTRACTION_SETS
+import wandb
 
 # Note(@jstmn): 'world__T__ee', 'world__T__root' were added to the observation space of the Panda agent as a 
 # convenience feature. We remove it here because it isn't included in the default ACT method. Additionally, it 
@@ -57,11 +58,11 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "ManiSkill"
+    wandb_project_name: str = "ManiSkill_Result"
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = True #Hayden
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     env_id: str = "PickCube-v1"
@@ -74,6 +75,9 @@ class Args:
     """total timesteps of the experiment"""
     batch_size: int = 256
     """the batch size of sample from the replay memory"""
+    #Hayden
+    real: bool = False
+    """use real demonstartion dataset"""
 
     # ACT specific arguments
     lr: float = 1e-4
@@ -89,7 +93,7 @@ class Args:
     lr_backbone: float = 1e-5
     masks: bool = False
     dilation: bool = False
-    include_depth: bool = True
+    include_depth: bool = False #Hayden
 
     # Transformer
     enc_layers: int = 2
@@ -124,6 +128,7 @@ class Args:
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
+
 
 
 class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
@@ -182,6 +187,11 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
         # flatten the rest of the data which should just be state data
         observation = common.flatten_state_dict(observation, use_torch=True)
+
+        #Hayden
+        if args.real:
+            observation = observation[..., :18]
+
         ret = dict()
         if self.include_state:
             ret["state"] = observation
@@ -223,7 +233,13 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         # Pre-process the actions
         for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
-            trajectories['actions'][i] = torch.Tensor(trajectories['actions'][i])
+            act = torch.Tensor(trajectories['actions'][i])
+
+            #Hayen
+            if args.real:
+                act = act[..., :8]
+
+            trajectories['actions'][i] = act
         print('Obs/action pre-processing is done.')
 
         # When the robot reaches the goal state, its joints and gripper fingers need to remain stationary
@@ -321,7 +337,14 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
 
         # flatten the rest of the data which should just be state data
-        obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        
+        #Hayden
+        #obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        if 'extra' in obs_dict:
+            obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()}
+        else:
+            obs_dict['extra'] = {} # 데이터가 없으면 빈 딕셔너리로 처리
+        
         obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
 
         processed_obs = dict(state=obs_dict, rgb=rgb, depth=depth) if self.include_depth else dict(state=obs_dict, rgb=rgb)
@@ -364,13 +387,26 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 class Agent(nn.Module):
     def __init__(self, env, args):
         super().__init__()
+
         assert len(env.single_observation_space['state'].shape) == 1 # (obs_dim,)
         assert len(env.single_observation_space['rgb'].shape) == 4 # (num_cams, C, H, W)
         assert len(env.single_action_space.shape) == 1 # (act_dim,)
         #assert (env.single_action_space.high == 1).all() and (env.single_action_space.low == -1).all()
 
-        self.state_dim = env.single_observation_space['state'].shape[0]
-        self.act_dim = env.single_action_space.shape[0]
+        print("single_action_space:", envs.single_action_space)
+        print("low :", envs.single_action_space.low)
+        print("high:", envs.single_action_space.high)
+
+
+        #Hayden - real dataset
+        if args.real:
+            self.state_dim = 18
+            self.act_dim = 8
+        else:
+            self.state_dim = env.single_observation_space['state'].shape[0]
+            self.act_dim = env.single_action_space.shape[0]
+
+
         self.kl_weight = args.kl_weight
         self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -397,10 +433,13 @@ class Agent(nn.Module):
         )
 
     def compute_loss(self, obs, action_seq):
+        
+        #print(f"DEBUG - Raw RGB min: {obs['rgb'].min().item()}, max: {obs['rgb'].max().item()}")
         # normalize rgb data
         obs['rgb'] = obs['rgb'].float() / 255.0
+        #print(f"DEBUG - Scaled RGB min: {obs['rgb'].min().item()}, max: {obs['rgb'].max().item()}")
         obs['rgb'] = self.normalize(obs['rgb'])
-
+        #print(f"DEBUG - Final RGB min: {obs['rgb'].min().item()}, max: {obs['rgb'].max().item()}")
         # depth data
         if args.include_depth:
             obs['depth'] = obs['depth'].float()
@@ -498,6 +537,7 @@ if __name__ == "__main__":
         env_kwargs["max_episode_steps"] = args.max_episode_steps
     other_kwargs = None
     wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth)]
+    
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
 
     # dataloader setup
@@ -538,6 +578,7 @@ if __name__ == "__main__":
 
     # agent setup
     agent = Agent(envs, args).to(device)
+    #agent = torch.compile(agent) #Hayden
 
     # optimizer setup
     param_dicts = [
@@ -559,15 +600,34 @@ if __name__ == "__main__":
     ema = EMAModel(parameters=agent.parameters(), power=0.75)
     ema_agent = Agent(envs, args).to(device)
 
-    # Evaluation
+     # Evaluation
+    
+    #Hayden
+    eval_stats = None
+    if dataset.norm_stats is not None:
+        eval_stats = {k: (v.to(device) if torch.is_tensor(v) else v)
+                      for k, v in dataset.norm_stats.items()}
+
+    
     #eval_kwargs = dict(
     #    stats=dataset.norm_stats, num_queries=args.num_queries, temporal_agg=args.temporal_agg,
     #    max_timesteps=gym_utils.find_max_episode_steps_value(envs), device=device, sim_backend=args.sim_backend
     #)
+    #eval_kwargs = dict(
+    #    stats=dataset.norm_stats, num_queries=args.num_queries, temporal_agg=args.temporal_agg,
+    #    max_timesteps=args.max_episode_steps, device=device, sim_backend=args.sim_backend
+    #)
+    
+    #Hayden
     eval_kwargs = dict(
-        stats=dataset.norm_stats, num_queries=args.num_queries, temporal_agg=args.temporal_agg,
-        max_timesteps=args.max_episode_steps, device=device, sim_backend=args.sim_backend
+        stats=eval_stats,
+        num_queries=args.num_queries,
+        temporal_agg=args.temporal_agg,
+        max_timesteps=args.max_episode_steps,
+        device=device,
+        sim_backend=args.sim_backend
     )
+
 
     # ---------------------------------------------------------------------------- #
     # Training begins.
@@ -600,7 +660,7 @@ if __name__ == "__main__":
         # update Exponential Moving Average of the model weights
         ema.step(agent.parameters())
         timings["update"] += time.time() - last_tick
-
+        
         # Evaluation
         if cur_iter % args.eval_freq == 0:
             last_tick = time.time()

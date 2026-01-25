@@ -1,0 +1,47 @@
+#!/bin/bash
+#SBATCH --account=158401129936
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:h100:8
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=320000
+#SBATCH --time=06:30:00
+
+source ~/.bashrc
+conda activate dita
+cd ..
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export TORCH_NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_TIMEOUT=120
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+
+seed=1
+ENV_ID="StackCube-v1"
+N_DEMOS=10
+
+srun --ntasks=1 --gpus=8 --cpus-per-task=${SLURM_CPUS_PER_TASK} --export=ALL \
+  torchrun \
+    --nnodes=1 \
+    --nproc_per_node=8 \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=127.0.0.1:29500 \
+    examples/baselines/dita/train_rgbd.py \
+    --env-id "${ENV_ID}" \
+    --demo-path "/scratch/user/$USER/code/ManiSkill/demos/${ENV_ID}/motionplanning/trajectory_${N_DEMOS}.h5" \
+    --control-mode "pd_joint_pos" \
+    --sim-backend "gpu" \
+    --num-demos "${N_DEMOS}" \
+    --max-episode-steps 100 \
+    --total-iters 30000 \
+    --log-freq 100 \
+    --eval-freq 5000 \
+    --exp-name "dita-${ENV_ID}-${N_DEMOS}_motionplanning_demos-${seed}" \
+    --batch-size 16 \
+    --clip-text-model-name "/scratch/user/$USER/models/clip-vit-base-patch32" \
+    --instruction-text "stack the red cube on the blue cube"

@@ -245,7 +245,9 @@ def _open_cabinet_with_planner(
 
     # Use smooth arc motion with small angle steps for reliable planning
     # Smaller steps = more reliable screw motion planning
+
     num_steps = 30  # More steps for larger openings
+
     step_angle = delta / num_steps
     current_angle = 0.0
 
