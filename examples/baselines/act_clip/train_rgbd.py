@@ -137,20 +137,22 @@ class Args:
 
         
 TASK_TEXT_MAP = {
-    "LiftPegUpright-v1": "lift the peg and stand it upright on the table",
-    "PegInsertionSide-v1": "insert the peg into the hole from the side",
-    "PickCube-v1": "pick the cube up into the air",
-    "PlaceSphere-v1": "pick up the sphere and place it into the target container",
-    "PlugCharger-v1": "plug the charger into the wall outlet",
-    "PullCube-v1": "pull the cube closer to target base",
-    "PullCubeTool-v1": "use the tool to pull the cube closer",
-    "PushCube-v1": "push the cube forward on the table",
-    "PushCube-v2": "push the cube to the target location",
-    "RaiseCube-v1": "lift the cube up to a certain height",
-    "StackCube-v1": "stack red cube on top of green cube",
+    "PickSodaFromCabinet-v1": "pick up the soda can from the cabinet",
+    "PlaceBookInShelf-v1": "place the book into the bookshelf",
+    "HammerNail-v1": "use the hammer to hit the nail into the wood",
+    "ScoopBanana-v1": "scoop the banana and move it to the target location",
     "OpenDrawer-v1": "grasp the handle and pull the drawer open",
+    "OpenCabinet-v1": "grasp the handle and open the cabinet door",
+    "PlaceCubeInDrawer-v1": "place the cube inside the open drawer",
+    "CookItemInPan-v1": "place the food item in the pan for cooking",
+    "LiftPegUpright-v1": "lift the peg and stand it upright on the table",
+    "PegInsertionSide-v2": "insert the peg into the hole from the side",
+    "PickDishFromRack-v1": "pick up a dish from the drying rack",
+    "PlaceDishInRack-v1": "place the dish into the drying rack",
+    "PlugCharger-v1": "plug the charger into the wall outlet",
+    "RaiseCube-v1": "lift the cube up to a certain height",
     "RotateArrow-v1": "rotate the arrow lever to the target direction",
-    "ScoopParticles-v1": "use the scoop to gather particles and move them to the target"
+    "StackCube-v1": "stack red cube on top of green cube"
 }
 
 class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
@@ -253,19 +255,27 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
 
         #Hayden - multi-task
-
         if self.is_multi_task:
+            self.json_data = load_json(data_path.replace(".h5", ".json"))
+            self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
+
             from collections import Counter
+            # 모든 traj의 state dim 추출
+            dims = [o["state"].shape[1] for o in trajectories["observations"]]
+            
+            # 2. 간단 확인 출력
+            target_dim = max(dims)
+            for i, d in enumerate(dims):
+                if d == target_dim:
+                    print(f"★ Max Dim ({d}) found in: {self.episode_env_ids[i]}")
+                    break 
 
-            # 모든 traj의 state dim 카운트
-            dims = [o["state"].shape[1] for o in trajectories["observations"]]   # (T, D)
             print("[STATE DIM COUNTS]", Counter(dims))
-
-            target_dim = max(dims)   # 지금이면 29로 통일하는 게 보통 안전
             print("[STATE TARGET DIM]", target_dim)
 
+            # 3. 패딩 로직
             for o in trajectories["observations"]:
-                s = o["state"]  # (T, D)
+                s = o["state"]
                 d = s.shape[1]
                 if d < target_dim:
                     pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
