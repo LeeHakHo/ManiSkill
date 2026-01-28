@@ -47,3 +47,4 @@ from .rotate_arrow import RotateArrowEnv
 from .pick_soda_from_cabinet import PickSodaFromCabinetEnv
 from .book_in_shelf import PlaceBookEnv
 from .place_cube_in_drawer import PlaceCubeInDrawerEnv
+from .pick_soda_from_cabinet import PickSodaFromCabinetEnv

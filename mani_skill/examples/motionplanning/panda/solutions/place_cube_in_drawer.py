@@ -166,15 +166,7 @@ def solve(env: PlaceCubeInDrawerEnv, seed=None, debug=False, vis=False):
         print("Cube grasped")
 
     # Lift cube up first 
-    #planner.move_to_pose_with_screw(sapien.Pose(p=[0, 0, 0.1] + cube_grasp_pose.p), cube_grasp_pose.q)
-    # planner.move_to_pose_with_screw(
-    #     sapien.Pose(p=(np.array([0.0, 0.0, 0.1], dtype=np.float32) + np.asarray(cube_grasp_pose.p)).tolist()),
-    #     cube_grasp_pose.q,)
-
-    lift_pose0 = sapien.Pose(
-        p=(np.asarray(cube_grasp_pose.p, dtype=np.float32) + np.array([0.0, 0.0, 0.1], dtype=np.float32)).tolist(),
-        q=np.asarray(cube_grasp_pose.q, dtype=np.float32).tolist(),)
-    planner.move_to_pose_with_screw(lift_pose0)
+    planner.move_to_pose_with_screw(sapien.Pose(p=[0, 0, 0.1] + cube_grasp_pose.p, q=cube_grasp_pose.q))
 
     # Lift cube
     tcp = env_inner.agent.tcp.pose
