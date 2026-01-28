@@ -176,16 +176,34 @@ class PlaceCubeInDrawerEnv(BaseEnv):
         self.cabinet = Articulation.merge(self._cabinets, name="cabinet")
         self.add_to_state_dict_registry(self.cabinet)
 
+        # self.handle_link = Link.merge(
+        #     [links[link_ids[i] % len(links)] for i, links in enumerate(handle_links)],
+        #     name="handle_link",
+        # )
+
+        # self.handle_link_pos = common.to_tensor(
+        #     np.array(
+        #         [
+        #             meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
+        #             if meshes[link_ids[i] % len(meshes)] is not None
+        #             else [0, 0, 0]
+        #             for i, meshes in enumerate(handle_links_meshes)
+        #         ]
+        #     ),
+        #     device=self.device,
+        # )
+
+
         self.handle_link = Link.merge(
-            [links[link_ids[i] % len(links)] for i, links in enumerate(handle_links)],
+            [links[link_ids[i % len(link_ids)] % len(links)] for i, links in enumerate(handle_links)],
             name="handle_link",
         )
 
         self.handle_link_pos = common.to_tensor(
             np.array(
                 [
-                    meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
-                    if meshes[link_ids[i] % len(meshes)] is not None
+                    meshes[link_ids[i % len(link_ids)] % len(meshes)].bounding_box.center_mass
+                    if meshes[link_ids[i % len(link_ids)] % len(meshes)] is not None
                     else [0, 0, 0]
                     for i, meshes in enumerate(handle_links_meshes)
                 ]

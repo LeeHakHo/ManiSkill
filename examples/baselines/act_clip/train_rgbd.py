@@ -41,7 +41,7 @@ from mani_skill.utils.io_utils import load_json
 # causes at torch shape mismatch error, because the configuration space is [batch x ndof], but these values are
 # [batch x 4 x 4]
 OBS_KEYS_TO_REMOVE = {"world__T__ee", "world__T__root"}
-
+ALLOWED_OBS_EXTRA_KEYS = {"tcp_pose", "left_arm_tcp", "right_arm_tcp", "goal_pos", "is_grasped"}
 
 @dataclass
 class Args:
@@ -167,12 +167,14 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
     Note that the returned observations will have a "rgbd" or "rgb" or "depth" key depending on the rgb/depth bool flags.
     """
 
-    def __init__(self, env, rgb=True, depth=True, state=True) -> None:
+    def __init__(self, env, rgb=True, depth=True, state=True, is_multi_task=True, target_num_cams=3) -> None:
         self.base_env: BaseEnv = env.unwrapped
         super().__init__(env)
         self.include_rgb = rgb
         self.include_depth = depth
         self.include_state = state
+        self.is_multi_task = is_multi_task
+        self.target_num_cams = target_num_cams
         self.transforms = T.Compose(
             [
                 T.Resize((224, 224), antialias=True),
@@ -206,6 +208,21 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
                 images_depth.append(resized_depth)
 
         rgb = torch.stack(images_rgb, dim=1) # (1, num_cams, C, 224, 224), uint8
+
+        #Hayden - Multi-task
+        if self.is_multi_task:
+            cur = rgb.shape[1]
+            if cur < self.target_num_cams:
+                pad = torch.zeros(
+                    (rgb.shape[0], self.target_num_cams - cur, rgb.shape[2], rgb.shape[3], rgb.shape[4]),
+                    dtype=rgb.dtype,
+                    device=rgb.device
+                )
+                rgb = torch.cat([rgb, pad], dim=1)
+
+            elif cur > self.target_num_cams:
+                rgb = rgb[:, :self.target_num_cams]
+
         if self.include_depth:
             depth = torch.stack(images_depth, dim=1) # (1, num_cams, C, 224, 224), float16
 
@@ -225,7 +242,7 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
 
 class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
-    def __init__(self, data_path, num_queries, num_traj, internal_instruction, lang_instruction, include_depth=True, is_multi_task=True):
+    def __init__(self, data_path, num_queries, num_traj, internal_instruction, lang_instruction, include_depth=True, is_multi_task=True, target_state_dim=None):
         if data_path[-4:] == '.pkl':
             raise NotImplementedError()
         else:
@@ -245,7 +262,10 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         self.internal_instruction = internal_instruction
         self.lang_instruction = lang_instruction
-        self.is_multi_task = args.is_multi_task
+        self.is_multi_task = is_multi_task
+        self.target_state_dim = target_state_dim
+        self.target_num_cams = 3
+
 
         # Pre-process the observations, make them align with the obs returned by the FlattenRGBDObservationWrapper
         obs_traj_dict_list = []
@@ -256,38 +276,35 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
 
         #Hayden - multi-task
-        # if self.is_multi_task:
-        #     self.json_data = load_json(data_path.replace(".h5", ".json"))
-        #     self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
+        if self.is_multi_task:
+            self.json_data = load_json(data_path.replace(".h5", ".json"))
+            self.episode_env_ids = []
+            for ep in self.json_data["episodes"]:
+                # JSON에 env_id가 있으면 쓰고, 없으면 기본값 사용
+                eid = ep.get("env_id", args.env_id)
+                self.episode_env_ids.append(eid)
 
-        #     from collections import Counter
-        #     # 모든 traj의 state dim 추출
-        #     dims = [o["state"].shape[1] for o in trajectories["observations"]]
+            from collections import Counter
+            # 모든 traj의 state dim 추출
+            dims = [o["state"].shape[1] for o in trajectories["observations"]]
             
-        #     # 2. 간단 확인 출력
-        #     target_dim = max(dims)
-        #     for i, d in enumerate(dims):
-        #         if d == target_dim:
-        #             print(f"★ Max Dim ({d}) found in: {self.episode_env_ids[i]}")
-        #             break 
+            # 2. 간단 확인 출력
+            if self.target_state_dim is None:
+                self.target_state_dim = max(dims)
+            print("[STATE DIM COUNTS]", Counter(dims))
+            print("[STATE TARGET DIM]", self.target_state_dim )
 
-        #     print("[STATE DIM COUNTS]", Counter(dims))
-        #     print("[STATE TARGET DIM]", target_dim)
-
-        #     # 3. 패딩 로직
-        #     for o in trajectories["observations"]:
-        #         s = o["state"]
-        #         d = s.shape[1]
-        #         if d < target_dim:
-        #             pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
-        #             o["state"] = torch.cat([s, pad], dim=1)
-        #         elif d > target_dim:
-        #             o["state"] = s[:, :target_dim]
+            # 3. 패딩 로직
+            for o in trajectories["observations"]:
+                s = o["state"]
+                d = s.shape[1]
+                if d < self.target_state_dim:
+                    pad = torch.zeros((s.shape[0], self.target_state_dim  - d), dtype=s.dtype)
+                    o["state"] = torch.cat([s, pad], dim=1)
+                elif d > self.target_state_dim:
+                    o["state"] = s[:, :self.target_state_dim ]
 
         #     #--------------------------
-
-
-        self.obs_keys = list(obs_traj_dict.keys())
 
         # Pre-process the actions
         for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
@@ -320,8 +337,8 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         #Hayden - multi-task
         if self.is_multi_task:
-            self.json_data = load_json(data_path.replace(".h5", ".json"))
-            self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
+            #self.json_data = load_json(data_path.replace(".h5", ".json"))
+            #self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
 
             from collections import Counter
             print("[EP ENV_ID COUNTS]", Counter(self.episode_env_ids))
@@ -412,24 +429,38 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
                 images_depth.append(resized_depth)
         rgb = torch.stack(images_rgb, dim=1) # (ep_len, num_cams, 3, 224, 224) # still uint8
         
-
-
-        #Hayden - multi-task padding
+        #Hayden - Multi-task
         if self.is_multi_task:
-            target_num_cams = 3 # 전체 태스크 중 최대 카메라 대수
-            current_num_cams = rgb.shape[1]
+            cur = rgb.shape[1]
+            if cur < self.target_num_cams:
+                pad = torch.zeros(
+                    (rgb.shape[0], self.target_num_cams - cur, rgb.shape[2], rgb.shape[3], rgb.shape[4]),
+                    dtype=rgb.dtype,
+                    device=rgb.device,
+                )
+                rgb = torch.cat([rgb, pad], dim=1)
+            elif cur > self.target_num_cams:
+                rgb = rgb[:, :self.target_num_cams]
 
-            if current_num_cams < target_num_cams:
-                pad_shape = (rgb.shape[0], target_num_cams - current_num_cams, 3, 224, 224)
-                padding = torch.zeros(pad_shape, dtype=rgb.dtype)
-                rgb = torch.cat([rgb, padding], dim=1)
-        
+
         if self.include_depth:
             depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
 
         # flatten the rest of the data which should just be state data
-        obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        if 'extra' in obs_dict:
+            obs_extra = {k: v for k, v in obs_dict['extra'].items() if k in ALLOWED_OBS_EXTRA_KEYS}
+            obs_extra_vectorized = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_extra.items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+            obs_dict['extra'] = obs_extra_vectorized
         obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
+
+        if self.is_multi_task and (self.target_state_dim is not None):
+            s = obs_dict
+            d = s.shape[1]
+            if d < self.target_state_dim:
+                pad = torch.zeros((s.shape[0], self.target_state_dim - d), dtype=s.dtype)
+                obs_dict = torch.cat([s, pad], dim=1)
+            elif d > self.target_state_dim:
+                obs_dict = s[:, :self.target_state_dim]
 
         processed_obs = dict(state=obs_dict, rgb=rgb, depth=depth) if self.include_depth else dict(state=obs_dict, rgb=rgb)
 
@@ -469,7 +500,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
 
 class Agent(nn.Module):
-    def __init__(self, env, args):
+    def __init__(self, env, args, is_multi_task: bool):
         super().__init__()
         assert len(env.single_observation_space['state'].shape) == 1 # (obs_dim,)
         assert len(env.single_observation_space['rgb'].shape) == 4 # (num_cams, C, H, W)
@@ -500,7 +531,7 @@ class Agent(nn.Module):
         else:
             use_lang_instruction = False
         self.internal_instruction = args.internal_instruction
-        self.is_multi_task = args.is_multi_task
+        self.is_multi_task = is_multi_task
         
         self.model = DETRVAE(
             backbones,
@@ -616,7 +647,6 @@ if __name__ == "__main__":
         is_multi_task = bool(demo_json.get("multi_env", False))
     except Exception as e:
         print("[WARN] failed to read demo json for multi_env:", e)
-
     # Multi-task policy:
     #   - either use internal_instruction
     #   - or use no language embedding at all (both None/False)
@@ -681,7 +711,7 @@ if __name__ == "__main__":
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
     other_kwargs = None
-    wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth)]
+    wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth,is_multi_task=is_multi_task, target_num_cams=3)]
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
 
 
@@ -699,7 +729,8 @@ if __name__ == "__main__":
 
 
     # dataloader setup
-    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, internal_instruction=args.internal_instruction, lang_instruction=args.lang_instruction, is_multi_task = args.is_multi_task)
+    env_state_dim = envs.single_observation_space["state"].shape[0]
+    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, internal_instruction=args.internal_instruction, lang_instruction=args.lang_instruction, is_multi_task = is_multi_task, target_state_dim=env_state_dim)
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
@@ -736,7 +767,7 @@ if __name__ == "__main__":
     )
 
     # agent setup
-    agent = Agent(envs, args).to(device)
+    agent = Agent(envs, args, is_multi_task).to(device)
     #agent = torch.compile(agent) #Hayden
 
     #Hayden
@@ -777,7 +808,7 @@ if __name__ == "__main__":
     # accelerates training and improves stability
     # holds a copy of the model weights
     ema = EMAModel(parameters=agent.parameters(), power=0.75)
-    ema_agent = Agent(envs, args).to(device)
+    ema_agent = Agent(envs, args, is_multi_task).to(device)
 
     # Evaluation
     
