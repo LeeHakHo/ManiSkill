@@ -233,6 +233,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
             # trajectories['observations'] is a list of np.ndarray (L+1, obs_dim)
             # trajectories['actions'] is a list of np.ndarray (L, act_dim)
+            
         print('Raw trajectory loaded, start to pre-process the observations...')
 
         self.include_depth = include_depth
@@ -255,35 +256,35 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
 
         #Hayden - multi-task
-        if self.is_multi_task:
-            self.json_data = load_json(data_path.replace(".h5", ".json"))
-            self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
+        # if self.is_multi_task:
+        #     self.json_data = load_json(data_path.replace(".h5", ".json"))
+        #     self.episode_env_ids = [ep.get("env_id", "Unknown-v1") for ep in self.json_data["episodes"]]
 
-            from collections import Counter
-            # 모든 traj의 state dim 추출
-            dims = [o["state"].shape[1] for o in trajectories["observations"]]
+        #     from collections import Counter
+        #     # 모든 traj의 state dim 추출
+        #     dims = [o["state"].shape[1] for o in trajectories["observations"]]
             
-            # 2. 간단 확인 출력
-            target_dim = max(dims)
-            for i, d in enumerate(dims):
-                if d == target_dim:
-                    print(f"★ Max Dim ({d}) found in: {self.episode_env_ids[i]}")
-                    break 
+        #     # 2. 간단 확인 출력
+        #     target_dim = max(dims)
+        #     for i, d in enumerate(dims):
+        #         if d == target_dim:
+        #             print(f"★ Max Dim ({d}) found in: {self.episode_env_ids[i]}")
+        #             break 
 
-            print("[STATE DIM COUNTS]", Counter(dims))
-            print("[STATE TARGET DIM]", target_dim)
+        #     print("[STATE DIM COUNTS]", Counter(dims))
+        #     print("[STATE TARGET DIM]", target_dim)
 
-            # 3. 패딩 로직
-            for o in trajectories["observations"]:
-                s = o["state"]
-                d = s.shape[1]
-                if d < target_dim:
-                    pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
-                    o["state"] = torch.cat([s, pad], dim=1)
-                elif d > target_dim:
-                    o["state"] = s[:, :target_dim]
+        #     # 3. 패딩 로직
+        #     for o in trajectories["observations"]:
+        #         s = o["state"]
+        #         d = s.shape[1]
+        #         if d < target_dim:
+        #             pad = torch.zeros((s.shape[0], target_dim - d), dtype=s.dtype)
+        #             o["state"] = torch.cat([s, pad], dim=1)
+        #         elif d > target_dim:
+        #             o["state"] = s[:, :target_dim]
 
-            #--------------------------
+        #     #--------------------------
 
 
         self.obs_keys = list(obs_traj_dict.keys())
@@ -353,7 +354,14 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             elif not self.delta_control:
                 target = act_seq[-1]
                 act_seq = torch.cat([act_seq, target.repeat(self.num_queries-action_len, 1)], dim=0)
-
+            else:
+                pad_size = self.num_queries - action_len
+            
+                # 마지막 액션을 복사해서 패딩 (가장 일반적인 방법)
+                last_action = act_seq[-1:] # (1, act_dim)
+                padding = last_action.repeat(pad_size, 1)
+                act_seq = torch.cat([act_seq, padding], dim=0)
+                
         # normalize state and act_seq
         if not self.delta_control:
             state = (state - self.norm_stats["state_mean"][0]) / self.norm_stats["state_std"][0]
@@ -544,15 +552,15 @@ class Agent(nn.Module):
 
         #Hayden - multi-task padding
         if self.is_multi_task:
-            current_dim = obs['state'].shape[-1]
-            if current_dim < self.state_dim:
-                pad_size = self.state_dim - current_dim
-                padding = torch.zeros(
-                    (*obs['state'].shape[:-1], pad_size), 
-                    device=obs['state'].device, 
-                    dtype=obs['state'].dtype
-                )
-                obs['state'] = torch.cat([obs['state'], padding], dim=-1)
+            # current_dim = obs['state'].shape[-1]
+            # if current_dim < self.state_dim:
+            #     pad_size = self.state_dim - current_dim
+            #     padding = torch.zeros(
+            #         (*obs['state'].shape[:-1], pad_size), 
+            #         device=obs['state'].device, 
+            #         dtype=obs['state'].dtype
+            #     )
+            #     obs['state'] = torch.cat([obs['state'], padding], dim=-1)
 
             current_num_cams = obs['rgb'].shape[1]
             if current_num_cams < self.num_cams:
