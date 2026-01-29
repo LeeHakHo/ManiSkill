@@ -186,6 +186,12 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
     def observation(self, observation: Dict):
         sensor_data = observation.pop("sensor_data")
         del observation["sensor_param"]
+
+        if "base_camera" not in sensor_data:
+            raise KeyError(f"base_camera not found in available cameras: {list(sensor_data.keys())}")
+        
+        cam_data = sensor_data["base_camera"]
+
         for key in OBS_KEYS_TO_REMOVE:
             try:
                 del observation["agent"][key]
@@ -264,7 +270,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         self.lang_instruction = lang_instruction
         self.is_multi_task = is_multi_task
         self.target_state_dim = target_state_dim
-        self.target_num_cams = 3
+        self.target_num_cams = 1
 
 
         # Pre-process the observations, make them align with the obs returned by the FlattenRGBDObservationWrapper
@@ -413,45 +419,74 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         # get rgbd data
         sensor_data = obs_dict.pop("sensor_data")
         del obs_dict["sensor_param"]
-        images_rgb = []
-        images_depth = []
-        for cam_data in sensor_data.values():
-            rgb = torch.from_numpy(cam_data["rgb"]) # (ep_len, H, W, 3)
-            resized_rgb = self.transforms(
-                rgb.permute(0, 3, 1, 2)
-            )  # (ep_len, 3, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
-            images_rgb.append(resized_rgb)
-            if self.include_depth:
-                depth = torch.Tensor(cam_data["depth"].astype(np.float32) / 1024).to(torch.float16) # (ep_len, H, W, 1)
-                resized_depth = self.transforms(
-                    depth.permute(0, 3, 1, 2)
-                )  # (ep_len, 1, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
-                images_depth.append(resized_depth)
-        rgb = torch.stack(images_rgb, dim=1) # (ep_len, num_cams, 3, 224, 224) # still uint8
+
+        cam_data = sensor_data["base_camera"]
+        # RGB 처리
+        rgb_tensor = torch.from_numpy(cam_data["rgb"])
+        resized_rgb = self.transforms(rgb_tensor.permute(0, 3, 1, 2))
+        rgb = torch.stack([resized_rgb], dim=1) # (ep_len, 1, 3, 224, 224)
+
+        # Depth 처리
+        if self.include_depth:
+            depth_tensor = torch.Tensor(cam_data["depth"].astype(np.float32) / 1024).to(torch.float16)
+            resized_depth = self.transforms(depth_tensor.permute(0, 3, 1, 2))
+            depth = torch.stack([resized_depth], dim=1)
+
+        # obs_dict['extra'] 내부의 is_grasped 같은 데이터를 처리합니다.
+        if isinstance(obs_dict, dict) and 'extra' in obs_dict:
+            new_extra = {}
+            for k, v in obs_dict['extra'].items():
+                if k in ALLOWED_OBS_EXTRA_KEYS:
+                    # 데이터가 numpy든 torch든 2차원으로 변환
+                    if hasattr(v, 'ndim') and v.ndim == 1:
+                        v = v[:, None] if isinstance(v, np.ndarray) else v.unsqueeze(1)
+                    new_extra[k] = v
+            obs_dict['extra'] = new_extra
+
+
+        # State 처리
+        obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
+        
+
+        # images_rgb = []
+        # images_depth = []
+        # for cam_data in sensor_data.values():
+        #     rgb = torch.from_numpy(cam_data["rgb"]) # (ep_len, H, W, 3)
+        #     resized_rgb = self.transforms(
+        #         rgb.permute(0, 3, 1, 2)
+        #     )  # (ep_len, 3, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
+        #     images_rgb.append(resized_rgb)
+        #     if self.include_depth:
+        #         depth = torch.Tensor(cam_data["depth"].astype(np.float32) / 1024).to(torch.float16) # (ep_len, H, W, 1)
+        #         resized_depth = self.transforms(
+        #             depth.permute(0, 3, 1, 2)
+        #         )  # (ep_len, 1, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
+        #         images_depth.append(resized_depth)
+        # rgb = torch.stack(images_rgb, dim=1) # (ep_len, num_cams, 3, 224, 224) # still uint8
         
         #Hayden - Multi-task
-        if self.is_multi_task:
-            cur = rgb.shape[1]
-            if cur < self.target_num_cams:
-                pad = torch.zeros(
-                    (rgb.shape[0], self.target_num_cams - cur, rgb.shape[2], rgb.shape[3], rgb.shape[4]),
-                    dtype=rgb.dtype,
-                    device=rgb.device,
-                )
-                rgb = torch.cat([rgb, pad], dim=1)
-            elif cur > self.target_num_cams:
-                rgb = rgb[:, :self.target_num_cams]
+        # if self.is_multi_task:
+        #     cur = rgb.shape[1]
+        #     if cur < self.target_num_cams:
+        #         pad = torch.zeros(
+        #             (rgb.shape[0], self.target_num_cams - cur, rgb.shape[2], rgb.shape[3], rgb.shape[4]),
+        #             dtype=rgb.dtype,
+        #             device=rgb.device,
+        #         )
+        #         rgb = torch.cat([rgb, pad], dim=1)
+        #     elif cur > self.target_num_cams:
+        #         rgb = rgb[:, :self.target_num_cams]
 
 
-        if self.include_depth:
-            depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
+        # if self.include_depth:
+        #     depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
 
-        # flatten the rest of the data which should just be state data
-        if 'extra' in obs_dict:
-            obs_extra = {k: v for k, v in obs_dict['extra'].items() if k in ALLOWED_OBS_EXTRA_KEYS}
-            obs_extra_vectorized = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_extra.items()} # dirty fix for data that has one dimension (e.g. is_grasped)
-            obs_dict['extra'] = obs_extra_vectorized
-        obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
+        # # flatten the rest of the data which should just be state data
+        # if 'extra' in obs_dict:
+        #     obs_extra = {k: v for k, v in obs_dict['extra'].items() if k in ALLOWED_OBS_EXTRA_KEYS}
+        #     obs_extra_vectorized = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_extra.items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        #     obs_dict['extra'] = obs_extra_vectorized
+        # obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
 
         if self.is_multi_task and (self.target_state_dim is not None):
             s = obs_dict
@@ -543,7 +578,7 @@ class Agent(nn.Module):
             use_lang_instruction=use_lang_instruction,
         )
 
-        self.num_cams = 3
+        self.num_cams = 1
 
     def compute_loss(self, obs, action_seq, lang_instruction):
         # normalize rgb data
@@ -583,15 +618,15 @@ class Agent(nn.Module):
 
         #Hayden - multi-task padding
         if self.is_multi_task:
-            # current_dim = obs['state'].shape[-1]
-            # if current_dim < self.state_dim:
-            #     pad_size = self.state_dim - current_dim
-            #     padding = torch.zeros(
-            #         (*obs['state'].shape[:-1], pad_size), 
-            #         device=obs['state'].device, 
-            #         dtype=obs['state'].dtype
-            #     )
-            #     obs['state'] = torch.cat([obs['state'], padding], dim=-1)
+            current_dim = obs['state'].shape[-1]
+            if current_dim < self.state_dim:
+                pad_size = self.state_dim - current_dim
+                padding = torch.zeros(
+                    (*obs['state'].shape[:-1], pad_size), 
+                    device=obs['state'].device, 
+                    dtype=obs['state'].dtype
+                )
+                obs['state'] = torch.cat([obs['state'], padding], dim=-1)
 
             current_num_cams = obs['rgb'].shape[1]
             if current_num_cams < self.num_cams:
@@ -711,7 +746,7 @@ if __name__ == "__main__":
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
     other_kwargs = None
-    wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth,is_multi_task=is_multi_task, target_num_cams=3)]
+    wrappers = [partial(FlattenRGBDObservationWrapper, depth=args.include_depth,is_multi_task=is_multi_task, target_num_cams=1)]
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
 
 
