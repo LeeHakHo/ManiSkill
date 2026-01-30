@@ -6,8 +6,8 @@ import cv2  # OpenCV 추가
 from tqdm import tqdm
 
 def convert():
-    data_dir = "real_model/LiftPegUpright40"
-    output_dir = "custom_demos/LiftPegUpright40/real_data"
+    data_dir = "custom_demos/Hyeonho_traj_v2/LiftPegUpright60"
+    output_dir = "custom_demos/Hyeonho_traj_v2/LiftPegUpright-v1"
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -34,7 +34,7 @@ def convert():
     episodes = []
 
     with h5py.File(output_h5, "w") as out_f:
-        for i in tqdm(range(40), desc="Converting to 128x128"):
+        for i in tqdm(range(60), desc="Converting to 128x128"):
             h5_name = os.path.join(data_dir, f"traj_{i}.h5")
             if not os.path.exists(h5_name):
                 continue

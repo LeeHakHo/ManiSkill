@@ -131,6 +131,8 @@ class Args:
     """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = 'pd_joint_delta_pos'
     """the control mode to use for the evaluation environments. Must match the control mode of the demonstration dataset."""
+    real: bool = True
+
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
@@ -233,7 +235,12 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
             depth = torch.stack(images_depth, dim=1) # (1, num_cams, C, 224, 224), float16
 
         # flatten the rest of the data which should just be state data
+        
         observation = common.flatten_state_dict(observation, use_torch=True)
+        
+        if args.real:
+            observation = observation[..., :18]
+
         ret = dict()
         if self.include_state:
             ret["state"] = observation
@@ -314,7 +321,13 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         # Pre-process the actions
         for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
-            trajectories['actions'][i] = torch.Tensor(trajectories['actions'][i])
+            current_act = torch.Tensor(trajectories['actions'][i])
+
+            #Hayen
+            if args.real:
+                current_act = current_act[..., :8]
+
+            trajectories['actions'][i] = current_act
         print('Obs/action pre-processing is done.')
 
         # When the robot reaches the goal state, its joints and gripper fingers need to remain stationary
@@ -542,8 +555,15 @@ class Agent(nn.Module):
         assert len(env.single_action_space.shape) == 1 # (act_dim,)
         #assert (env.single_action_space.high == 1).all() and (env.single_action_space.low == -1).all()
 
-        self.state_dim = env.single_observation_space['state'].shape[0]
-        self.act_dim = env.single_action_space.shape[0]
+        #Hayden - real dataset
+        if args.real:
+            self.state_dim = 18
+            self.act_dim = 8
+        else:
+            self.state_dim = env.single_observation_space['state'].shape[0]
+            self.act_dim = env.single_action_space.shape[0]
+
+
         self.kl_weight = args.kl_weight
         self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -977,6 +997,11 @@ if __name__ == "__main__":
                     best_eval_metrics[k] = np.mean(eval_metrics[k])
                     save_ckpt(run_name, f"best_eval_{k}")
                     print(f'New best {k}_rate: {best_eval_metrics[k]:.4f}. Saving checkpoint.')
+
+        # Checkpoint
+        if args.save_freq is not None and cur_iter % args.save_freq == 0:
+            save_ckpt(run_name, str(cur_iter))
+
 
     envs.close()
     if envs_by_task is not None:

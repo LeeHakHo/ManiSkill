@@ -116,9 +116,9 @@ class Args:
     """the frequency of evaluating the agent on the evaluation environments"""
     save_freq: Optional[int] = None
     """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
-    num_eval_episodes: int = 100
+    num_eval_episodes: int = 1
     """the number of episodes to evaluate the agent on"""
-    num_eval_envs: int = 10
+    num_eval_envs: int = 1
     """the number of parallel environments to evaluate the agent on"""
     sim_backend: str = "cpu"
     """the simulation backend to use for evaluation environments. can be "cpu" or "gpu"""
@@ -234,13 +234,13 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         # Pre-process the actions
         for i in tqdm.tqdm(range(len(trajectories['actions'])), desc='Pre-processing actions'):
-            act = torch.Tensor(trajectories['actions'][i])
+            current_act = torch.Tensor(trajectories['actions'][i])
 
             #Hayen
             if args.real:
-                act = act[..., :8]
+                current_act = current_act[..., :8]
 
-            trajectories['actions'][i] = act
+            trajectories['actions'][i] = current_act
         print('Obs/action pre-processing is done.')
 
         # When the robot reaches the goal state, its joints and gripper fingers need to remain stationary
