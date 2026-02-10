@@ -1,3 +1,4 @@
+import h5py
 ALGO_NAME = 'BC_ACT_CLIP_rgbd'
 
 from collections import defaultdict
@@ -58,7 +59,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "ManiSkill"
+    wandb_project_name: str = "ManiSkill_fixed"
     """the wandb's project name"""
     wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
@@ -131,7 +132,7 @@ class Args:
     """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = 'pd_joint_delta_pos'
     """the control mode to use for the evaluation environments. Must match the control mode of the demonstration dataset."""
-    real: bool = True
+    real: bool = False
 
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
@@ -181,7 +182,7 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
             [
                 T.Resize((224, 224), antialias=True),
             ]
-        )  # resize the input image to be at least 224x224
+        )  # resize the input image
         new_obs = self.observation(self.base_env._init_raw_obs)
         self.base_env.update_obs_space(new_obs)
 
@@ -202,18 +203,33 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
         images_rgb = []
         images_depth = []
-        for cam_data in sensor_data.values():
-            if self.include_rgb:
-                resized_rgb = self.transforms(
-                    cam_data["rgb"].permute(0, 3, 1, 2)
-                )  # (1, 3, 224, 224)
-                images_rgb.append(resized_rgb)
-            if self.include_depth:
-                depth = (cam_data["depth"].to(torch.float32) / 1024).to(torch.float16)
-                resized_depth = self.transforms(
-                    depth.permute(0, 3, 1, 2)
-                )  # (1, 1, 224, 224)
-                images_depth.append(resized_depth)
+        # for cam_data in sensor_data.values():
+        #     if self.include_rgb:
+        #         resized_rgb = self.transforms(
+        #             cam_data["rgb"].permute(0, 3, 1, 2)
+        #         )  # (1, 3, 224, 224)
+        #         images_rgb.append(resized_rgb)
+        #     if self.include_depth:
+        #         depth = (cam_data["depth"].to(torch.float32) / 1024).to(torch.float16)
+        #         resized_depth = self.transforms(
+        #             depth.permute(0, 3, 1, 2)
+        #         )  # (1, 1, 224, 224)
+        #         images_depth.append(resized_depth)
+
+        cam_data = sensor_data["base_camera"]
+            
+        if self.include_rgb:
+            resized_rgb = self.transforms(
+                cam_data["rgb"].permute(0, 3, 1, 2)
+            )
+            images_rgb.append(resized_rgb)
+        
+        if self.include_depth:
+            depth = (cam_data["depth"].to(torch.float32) / 1024).to(torch.float16)
+            resized_depth = self.transforms(
+                depth.permute(0, 3, 1, 2)
+            )
+            images_depth.append(resized_depth)
 
         rgb = torch.stack(images_rgb, dim=1) # (1, num_cams, C, 224, 224), uint8
 
@@ -293,21 +309,17 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             self.json_data = load_json(data_path.replace(".h5", ".json"))
             self.episode_env_ids = []
             for ep in self.json_data["episodes"]:
-                # JSON에 env_id가 있으면 쓰고, 없으면 기본값 사용
                 eid = ep.get("env_id", args.env_id)
                 self.episode_env_ids.append(eid)
 
             from collections import Counter
-            # 모든 traj의 state dim 추출
             dims = [o["state"].shape[1] for o in trajectories["observations"]]
             
-            # 2. 간단 확인 출력
             if self.target_state_dim is None:
                 self.target_state_dim = max(dims)
             print("[STATE DIM COUNTS]", Counter(dims))
             print("[STATE TARGET DIM]", self.target_state_dim )
 
-            # 3. 패딩 로직
             for o in trajectories["observations"]:
                 s = o["state"]
                 d = s.shape[1]
@@ -391,9 +403,8 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
                 target = act_seq[-1]
                 act_seq = torch.cat([act_seq, target.repeat(self.num_queries-action_len, 1)], dim=0)
             else:
+                #multi_task
                 pad_size = self.num_queries - action_len
-            
-                # 마지막 액션을 복사해서 패딩 (가장 일반적인 방법)
                 last_action = act_seq[-1:] # (1, act_dim)
                 padding = last_action.repeat(pad_size, 1)
                 act_seq = torch.cat([act_seq, padding], dim=0)
@@ -434,18 +445,18 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
         del obs_dict["sensor_param"]
 
         cam_data = sensor_data["base_camera"]
-        # RGB 처리
+        # RGB
         rgb_tensor = torch.from_numpy(cam_data["rgb"])
         resized_rgb = self.transforms(rgb_tensor.permute(0, 3, 1, 2))
         rgb = torch.stack([resized_rgb], dim=1) # (ep_len, 1, 3, 224, 224)
 
-        # Depth 처리
+        # Depth
         if self.include_depth:
             depth_tensor = torch.Tensor(cam_data["depth"].astype(np.float32) / 1024).to(torch.float16)
             resized_depth = self.transforms(depth_tensor.permute(0, 3, 1, 2))
             depth = torch.stack([resized_depth], dim=1)
 
-        # obs_dict['extra'] 내부의 is_grasped 같은 데이터를 처리합니다.
+        # obs_dict['extra']
         if isinstance(obs_dict, dict) and 'extra' in obs_dict:
             new_extra = {}
             for k, v in obs_dict['extra'].items():
@@ -457,50 +468,9 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             obs_dict['extra'] = new_extra
 
 
-        # State 처리
+        # State
         obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
         
-
-        # images_rgb = []
-        # images_depth = []
-        # for cam_data in sensor_data.values():
-        #     rgb = torch.from_numpy(cam_data["rgb"]) # (ep_len, H, W, 3)
-        #     resized_rgb = self.transforms(
-        #         rgb.permute(0, 3, 1, 2)
-        #     )  # (ep_len, 3, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
-        #     images_rgb.append(resized_rgb)
-        #     if self.include_depth:
-        #         depth = torch.Tensor(cam_data["depth"].astype(np.float32) / 1024).to(torch.float16) # (ep_len, H, W, 1)
-        #         resized_depth = self.transforms(
-        #             depth.permute(0, 3, 1, 2)
-        #         )  # (ep_len, 1, 224, 224); pre-trained models from torchvision.models expect input image to be at least 224x224
-        #         images_depth.append(resized_depth)
-        # rgb = torch.stack(images_rgb, dim=1) # (ep_len, num_cams, 3, 224, 224) # still uint8
-        
-        #Hayden - Multi-task
-        # if self.is_multi_task:
-        #     cur = rgb.shape[1]
-        #     if cur < self.target_num_cams:
-        #         pad = torch.zeros(
-        #             (rgb.shape[0], self.target_num_cams - cur, rgb.shape[2], rgb.shape[3], rgb.shape[4]),
-        #             dtype=rgb.dtype,
-        #             device=rgb.device,
-        #         )
-        #         rgb = torch.cat([rgb, pad], dim=1)
-        #     elif cur > self.target_num_cams:
-        #         rgb = rgb[:, :self.target_num_cams]
-
-
-        # if self.include_depth:
-        #     depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
-
-        # # flatten the rest of the data which should just be state data
-        # if 'extra' in obs_dict:
-        #     obs_extra = {k: v for k, v in obs_dict['extra'].items() if k in ALLOWED_OBS_EXTRA_KEYS}
-        #     obs_extra_vectorized = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_extra.items()} # dirty fix for data that has one dimension (e.g. is_grasped)
-        #     obs_dict['extra'] = obs_extra_vectorized
-        # obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
-
         if self.is_multi_task and (self.target_state_dim is not None):
             s = obs_dict
             d = s.shape[1]
@@ -750,7 +720,6 @@ if __name__ == "__main__":
                 raise Exception('Control mode not found in json')
             assert control_mode == args.control_mode, f"Control mode mismatched. Dataset has control mode {control_mode}, but args has control mode {args.control_mode}"
 
-    # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -945,7 +914,6 @@ if __name__ == "__main__":
             else:
                 # --- [Multi-task Evaluation] ---
                 all_task_success_rates = []
-                # 최종적으로 하단 로깅에서 쓸 통합 metrics 딕셔너리
                 combined_metrics = defaultdict(list)
 
                 for eid, task_envs in envs_by_task.items():
@@ -957,40 +925,32 @@ if __name__ == "__main__":
                         save_name=f"latest_eval_{eid}"
                     )
 
-                    # 각 태스크별 성공률 수집 (평균 계산용)
                     s_rate = np.mean(task_metrics["success_at_end"])
                     all_task_success_rates.append(s_rate)
 
-                    # 1. 태스크별 개별 로깅 (Pick, Pull, Push 각각 따로 기록)
                     for k, v in task_metrics.items():
                         m = np.mean(v)
                         writer.add_scalar(f"eval/{eid}/{k}", m, cur_iter)
-                        combined_metrics[k].append(m) # 전체 평균용 데이터 수집
+                        combined_metrics[k].append(m)
                     
                     print(f"[{eid}] success_at_end: {s_rate:.4f}")
 
-                # 2. 전체 태스크 평균(Average) 계산하여 하단 로깅 변수에 할당
                 eval_metrics = {}
                 for k, v_list in combined_metrics.items():
                     eval_metrics[k] = np.mean(v_list)
                 
-                # 가독성을 위해 별도 로그 남김
                 avg_success = np.mean(all_task_success_rates)
                 writer.add_scalar("eval/overall_avg_success", avg_success, cur_iter)
                 print(f"--- [Overall] Average Success Rate: {avg_success:.4f} ---")
 
-            # --- [Common Logging & Checkpointing] ---
-            # 이제 eval_metrics는 단일 태스크 결과거나 멀티태스크의 '평균' 결과임
             timings["eval"] += time.time() - last_tick
 
             print(f"Evaluated {args.num_eval_episodes} episodes per task")
             for k in eval_metrics.keys():
-                # 이미 위에서 평균을 냈으므로 np.mean은 안전장치용
                 m_val = np.mean(eval_metrics[k])
                 writer.add_scalar(f"eval/{k}", m_val, cur_iter)
                 print(f"Total {k}: {m_val:.4f}")
 
-            # 베스트 모델 저장 기준 (멀티태스크인 경우 전체 평균 성공률 기준)
             save_on_best_metrics = ["success_once", "success_at_end"]
             for k in save_on_best_metrics:
                 if k in eval_metrics and np.mean(eval_metrics[k]) > best_eval_metrics[k]:

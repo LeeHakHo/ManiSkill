@@ -16,28 +16,4 @@ from .push_t import PushTEnv
 from .pull_cube_tool import PullCubeToolEnv
 from .stack_pyramid import StackPyramidEnv
 #
-from .colosseum_v2_versions import *
-from .pour_sphere import PourSphereEnv
-from .dual_panda_test import DualArmEmptyEnv
-
-from .hammer_nail import HammerNailEnv
-from .dual_panda_pick_cube import DualArmPickCubeEnv
-from .dual_panda_drawer_place import DualArmDrawerPlaceEnv
-from .dual_panda_drawer_open import DualArmDrawerOpenEnv
-from .dual_panda_pick_bottle import DualArmPickBottleEnv
-from .dual_panda_pick_pour_pot import DualArmPourPotEnv
-from .dual_panda_lift_pot import DualArmLiftPotEnv
-from .dual_panda_lift_tray import DualArmLiftTrayEnv
-from .dual_panda_threading import DualPandaThreadingEnv
-from .dual_panda_stack3cubes import TwoRobotStack3Cube
-from .dual_panda_pen_cap import DualArmPenCapEnv
-from .object_in_cabinet import ObjectInCabinetEnv
-from .dual_panda_push_box import DualPandaPushBoxEnv
-
-from .scoop_particles import ScoopParticlesEnv
-from .rotate_arrow import RotateArrowEnv
-from .pick_soda_from_cabinet import PickSodaFromCabinetEnv
-from .book_in_shelf import PlaceBookEnv
-from .place_cube_in_drawer import PlaceCubeInDrawerEnv
-from .pick_soda_from_cabinet import PickSodaFromCabinetEnv
 from .colosseum_v2 import *

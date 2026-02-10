@@ -115,29 +115,23 @@ class PlaceCubeInDrawerEnv(BaseEnv):
         self._load_cube()
 
     def _load_cube(self):
-        from mani_skill.utils.structs.actor import Actor
-
-        cubes = []
-        for i in range(self.num_envs):
-            builder = self.scene.create_actor_builder()
-            material = sapien.physx.PhysxMaterial(
-                static_friction=2.0,
-                dynamic_friction=2.0,
-                restitution=0.0,
-            )
-            builder.add_box_collision(half_size=[self.CUBE_HALF_SIZE] * 3, material=material)
-            builder.add_box_visual(
-                half_size=[self.CUBE_HALF_SIZE] * 3,
-                material=sapien.render.RenderMaterial(base_color=[1, 0, 0, 1]),
-            )
-            builder.set_initial_pose(sapien.Pose(p=[0, 0, self.CUBE_HALF_SIZE]))
-            builder.set_scene_idxs([i])
-            cube_i = builder.build(name=f"cube-{i}")
-            self.remove_from_state_dict_registry(cube_i)
-            cubes.append(cube_i)
-
-        self.cube = Actor.merge(cubes, name="cube")
-        self.add_to_state_dict_registry(self.cube)
+        # Build cube with high friction so it stays in drawer
+        builder = self.scene.create_actor_builder()
+        material = sapien.physx.PhysxMaterial(
+            static_friction=2.0,
+            dynamic_friction=2.0,
+            restitution=0.0,
+        )
+        builder.add_box_collision(
+            half_size=[self.CUBE_HALF_SIZE] * 3,
+            material=material,
+        )
+        builder.add_box_visual(
+            half_size=[self.CUBE_HALF_SIZE] * 3,
+            material=sapien.render.RenderMaterial(base_color=[1, 0, 0, 1]),
+        )
+        builder.set_initial_pose(sapien.Pose(p=[0, 0, self.CUBE_HALF_SIZE]))
+        self.cube = builder.build(name="cube")
 
     def _load_cabinets(self, joint_types: List[str]):
         # Use the bottom drawer (same as PickCubeFromDrawer)
@@ -151,53 +145,39 @@ class PlaceCubeInDrawerEnv(BaseEnv):
             self.scene, f"partnet-mobility:{self._model_id}"
         )
         cabinet_builder.initial_pose = sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0])
-        for i in range(self.num_envs):
-            cabinet_builder.set_scene_idxs([i])
-            cabinet = cabinet_builder.build(name=f"cabinet-{self._model_id}-{i}")
-            self.remove_from_state_dict_registry(cabinet)
+        cabinet = cabinet_builder.build(name=f"cabinet-{self._model_id}")
+        self.remove_from_state_dict_registry(cabinet)
 
-            for link in cabinet.links:
-                link.set_collision_group_bit(group=2, bit_idx=CABINET_COLLISION_BIT, bit=1)
+        for link in cabinet.links:
+            link.set_collision_group_bit(
+                group=2, bit_idx=CABINET_COLLISION_BIT, bit=1
+            )
+        self._cabinets.append(cabinet)
+        handle_links.append([])
+        handle_links_meshes.append([])
 
-            self._cabinets.append(cabinet)
-            handle_links.append([])
-            handle_links_meshes.append([])
+        for link, joint in zip(cabinet.links, cabinet.joints):
+            if joint.type[0] in joint_types:
+                handle_links[-1].append(link)
+                meshes = link.generate_mesh(
+                    filter=lambda _, render_shape: "handle" in render_shape.name,
+                    mesh_name="handle",
+                )
+                if meshes:
+                    handle_links_meshes[-1].append(meshes[0])
+                else:
+                    handle_links_meshes[-1].append(None)
 
-            for link, joint in zip(cabinet.links, cabinet.joints):
-                if joint.type[0] in joint_types:
-                    handle_links[-1].append(link)
-                    meshes = link.generate_mesh(
-                        filter=lambda _, render_shape: "handle" in render_shape.name,
-                        mesh_name="handle",
-                    )
-                    handle_links_meshes[-1].append(meshes[0] if meshes else None)
-            if any(len(x) == 0 for x in handle_links):
-                raise ValueError(f"Some env has no {joint_types} joints in cabinet model {self._model_id}.")
-
+        if not handle_links[0]:
+            raise ValueError(
+                f"No {joint_types} joints found in cabinet model {self._model_id}."
+            )
 
         self.cabinet = Articulation.merge(self._cabinets, name="cabinet")
         self.add_to_state_dict_registry(self.cabinet)
 
-        # self.handle_link = Link.merge(
-        #     [links[link_ids[i] % len(links)] for i, links in enumerate(handle_links)],
-        #     name="handle_link",
-        # )
-
-        # self.handle_link_pos = common.to_tensor(
-        #     np.array(
-        #         [
-        #             meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
-        #             if meshes[link_ids[i] % len(meshes)] is not None
-        #             else [0, 0, 0]
-        #             for i, meshes in enumerate(handle_links_meshes)
-        #         ]
-        #     ),
-        #     device=self.device,
-        # )
-
-
         self.handle_link = Link.merge(
-            [links[link_ids[i % len(link_ids)] % len(links)] for i, links in enumerate(handle_links)],
+            [links[link_ids[i] % len(links)] for i, links in enumerate(handle_links)],
             name="handle_link",
         )
 
@@ -262,8 +242,8 @@ class PlaceCubeInDrawerEnv(BaseEnv):
             # Robot is at Y=-0.615, cabinet rotated so drawer faces -Y (towards robot)
             # Swapped: cabinet now on the right side
             cabinet_pos = torch.zeros((b, 3))
-            cabinet_pos[:, 0] = torch.rand(b, device=self.device) * 0.2 - 0.1     # X position (right side)
-            cabinet_pos[:, 1] = (torch.rand(b, device=self.device) * 0.2 - 0.1) - 0.5    # Y position
+            cabinet_pos[:, 0] = torch.rand(b) * 0.2 - 0.1     # X position (right side)
+            cabinet_pos[:, 1] = (torch.rand(b) * 0.2 - 0.1) - 0.5    # Y position
             cabinet_pos[:, 2] = self.cabinet_zs[env_idx]
 
             # Rotate 90° clockwise around Z so drawer faces -Y
@@ -314,8 +294,8 @@ class PlaceCubeInDrawerEnv(BaseEnv):
             # Robot is at Y=-0.615, cabinet at X=0.10
             # Swapped: cube now on the left side
             cube_xyz = torch.zeros((b, 3))
-            cube_xyz[:, 0] = -0.30 + (torch.rand(b, device=self.device) - 0.5) * 0.08  # X: to the left
-            cube_xyz[:, 1] = 0.30 + (torch.rand(b, device=self.device) - 0.5) * 0.08  # Y: between robot and cabinet
+            cube_xyz[:, 0] = -0.30 + (torch.rand(b) - 0.5) * 0.08  # X: to the left
+            cube_xyz[:, 1] = 0.30 + (torch.rand(b) - 0.5) * 0.08  # Y: between robot and cabinet
             cube_xyz[:, 2] = self.CUBE_HALF_SIZE
 
             self.cube.set_pose(Pose.create_from_pq(p=cube_xyz))

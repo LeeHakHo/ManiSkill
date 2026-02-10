@@ -208,32 +208,34 @@ class OpenCabinetEnv(BaseEnv):
         handle_links: List[List[Link]] = []
         handle_links_meshes: List[List[trimesh.Trimesh]] = []
 
-        for i in range(self.num_envs):
-            cabinet_builder = articulations.get_articulation_builder(
-                self.scene, f"partnet-mobility:{self._model_id}"
+        cabinet_builder = articulations.get_articulation_builder(
+            self.scene, f"partnet-mobility:{self._model_id}"
+        )
+        cabinet_builder.initial_pose = sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0])
+        cabinet = cabinet_builder.build(name=f"cabinet-{self._model_id}")
+        self.remove_from_state_dict_registry(cabinet)
+
+        for link in cabinet.links:
+            link.set_collision_group_bit(
+                group=2, bit_idx=CABINET_COLLISION_BIT, bit=1
             )
-            cabinet_builder.set_scene_idxs(scene_idxs=[i])  # ⭐ env마다 1개씩
-            cabinet_builder.initial_pose = sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0])
+        self._cabinets.append(cabinet)
+        handle_links.append([])
+        handle_links_meshes.append([])
 
-            cabinet = cabinet_builder.build(name=f"cabinet-{self._model_id}-{i}")
-            self.remove_from_state_dict_registry(cabinet)
-
-            for link in cabinet.links:
-                link.set_collision_group_bit(group=2, bit_idx=CABINET_COLLISION_BIT, bit=1)
-
-            self._cabinets.append(cabinet)
-            handle_links.append([])
-            handle_links_meshes.append([])
-
-            for link, joint in zip(cabinet.links, cabinet.joints):
-                if joint.type[0] in joint_types:
-                    handle_links[-1].append(link)
-                    meshes = link.generate_mesh(
-                        filter=lambda _, render_shape: "handle" in render_shape.name,
-                        mesh_name="handle",
-                    )
-                    handle_links_meshes[-1].append(meshes[0] if meshes else None)
-
+        for link, joint in zip(cabinet.links, cabinet.joints):
+            # Check for revolute joints (doors)
+            if joint.type[0] in joint_types:
+                handle_links[-1].append(link)
+                meshes = link.generate_mesh(
+                    filter=lambda _, render_shape: "handle" in render_shape.name,
+                    mesh_name="handle",
+                )
+                if meshes:
+                    handle_links_meshes[-1].append(meshes[0])
+                else:
+                    # Fallback: create a dummy mesh at origin
+                    handle_links_meshes[-1].append(None)
 
         # If no revolute joints found, raise error
         if not handle_links[0]:
@@ -246,21 +248,10 @@ class OpenCabinetEnv(BaseEnv):
         self.add_to_state_dict_registry(self.cabinet)
 
         # Merge handle links
-        selected_links = []
-        bad_envs = []
-        for i, links in enumerate(handle_links):
-            if len(links) == 0:
-                bad_envs.append(i)
-            else:
-                selected_links.append(links[0])
-
-        if bad_envs:
-            raise RuntimeError(
-                f"[OpenCabinetEnv] No handle link found for envs={bad_envs}. "
-                f"model_id={self._model_id}, joint_types={joint_types}."
-            )
-
-        self.handle_link = Link.merge(selected_links, name="handle_link")
+        self.handle_link = Link.merge(
+            [links[link_ids[i] % len(links)] for i, links in enumerate(handle_links)],
+            name="handle_link",
+        )
 
         # Store handle position relative to link (single model, replicated for all envs)
         handle_pos_list = [
@@ -274,7 +265,6 @@ class OpenCabinetEnv(BaseEnv):
             np.array(handle_pos_list * self.num_envs),
             device=self.device,
         )
-
 
         self.handle_link_goal = actors.build_sphere(
             self.scene,
