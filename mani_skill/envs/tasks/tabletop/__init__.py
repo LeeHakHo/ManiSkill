@@ -9,20 +9,12 @@ from .pull_cube import PullCubeEnv
 from .push_cube import PushCubeEnv
 from .stack_cube import StackCubeEnv
 from .turn_faucet import TurnFaucetEnv
-from .two_robot_pick_cube import TwoRobotPickCube
-from .dual_panda_stack_cube import TwoRobotStackCube
 from .poke_cube import PokeCubeEnv
-from .place_dish_in_rack import PlaceDishInRackEnv
-from .pick_dish_from_rack import PickDishFromRackEnv
 from .place_sphere import PlaceSphereEnv
 from .roll_ball import RollBallEnv
 from .push_t import PushTEnv
 from .pull_cube_tool import PullCubeToolEnv
 from .stack_pyramid import StackPyramidEnv
-from .hang_clothing_frame_on_pole import HangClothingFrameOnPoleEnv
-from .cook_item_in_pan import CookItemInPanEnv
-from .open_cabinet import OpenCabinetEnv
-from .scoop_banana import ScoopBananaEnv
 #
 from .colosseum_v2_versions import *
 from .pour_sphere import PourSphereEnv
@@ -48,3 +40,4 @@ from .pick_soda_from_cabinet import PickSodaFromCabinetEnv
 from .book_in_shelf import PlaceBookEnv
 from .place_cube_in_drawer import PlaceCubeInDrawerEnv
 from .pick_soda_from_cabinet import PickSodaFromCabinetEnv
+from .colosseum_v2 import *
