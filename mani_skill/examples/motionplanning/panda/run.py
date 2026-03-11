@@ -1,4 +1,8 @@
 import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+from typing import cast
+from termcolor import cprint
+import h5py
 import os
 from copy import deepcopy
 import time
@@ -10,10 +14,11 @@ import numpy as np
 from tqdm import tqdm
 import os.path as osp
 import mani_skill.envs
+from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.trajectory.merge_trajectory import merge_trajectories
-from mani_skill.examples.motionplanning.panda.solutions import solvePushCube, solvePickCube, solveStackCube, solvePegInsertionSide, solvePlugCharger, solvePullCubeTool, solveLiftPegUpright, solvePullCube, solveDrawTriangle, solveDrawSVG, solvePlaceSphere,solveOpenDrawer,solveRaiseCube, solvePlaceBookInShelf, solveHangClothingFrameOnPole, solvePickSodaFromCabinet, solveRotateArrow, solveScoopBanana, solvePickLightbulbPlaceSocket, solvePlaceAppleOnPlate, solveCookItemInPan, solvePickBananaFromOpenDrawer,solvePlaceDishInRack,solvePickDishFromRack,solvePourSphere, solveHammerNail, solveOpenCabinet, solveObjectInCabinet, solvePickCubeFromDrawer, solvePlaceCubeInDrawer
-from mani_skill.envs.distraction_set import DISTRACTION_SETS
+from mani_skill.examples.motionplanning.panda.solutions import solvePushCube, solvePickCube, solveStackCube, solvePegInsertionSide, solvePlugCharger, solvePullCubeTool, solveLiftPegUpright, solvePullCube, solveDrawTriangle, solveDrawSVG, solvePlaceSphere,solveOpenDrawer,solveRaiseCube, solvePlaceBookInShelf, solvePickSodaFromCabinet, solveRotateArrow, solveScoopBanana, solveCookItemInPan, solvePlaceDishInRack,solvePickDishFromRack,solveHammerNail, solveOpenCabinet, solvePlaceCubeInDrawer
+from mani_skill.envs.tasks.tabletop.colosseum_v2.distraction_set import DISTRACTION_SETS
 from mani_skill.examples.motionplanning.dual_panda.solutions import solveBimanualLiftPot, solveBimanualLiftTray, solveBimanualPassBottle, solveBimanualPourPot, solveBimanualPassCube, solveBimanualDrawerPlace, solveBimanualPourPot, solveBimanualDrawerOpen, solveBimanualPenCap, solveBimanualPushBox, solveBimanualStack3Cubes, solveBimanualStackCubes, solveBimanualThreading
 
 MP_SOLUTIONS = {
@@ -37,24 +42,27 @@ MP_SOLUTIONS = {
     "StackCube-v2": solveStackCube,                 # new
 
     "PlaceBookInShelf-v1": solvePlaceBookInShelf,
-    "HangClothingFrameOnPole-v1": solveHangClothingFrameOnPole,
+    # "HangClothingFrameOnPole-v1": solveHangClothingFrameOnPole,
     "PickSodaFromCabinet-v1": solvePickSodaFromCabinet,
     "RotateArrow-v1": solveRotateArrow,
     "ScoopBanana-v1": solveScoopBanana,
-    "PickBananaFromOpenDrawer-v1": solvePickBananaFromOpenDrawer,    # new
-    "PickCubeFromDrawer-v1": solvePickCubeFromDrawer,              # new
-    "PickLightbulbPlaceSocket-v1": solvePickLightbulbPlaceSocket, #new
-    "PlaceAppleOnPlate-v1": solvePlaceAppleOnPlate, # new
     "CookItemInPan-v1": solveCookItemInPan,
     "PlaceDishInRack-v1": solvePlaceDishInRack, # new
     "PickDishFromRack-v1": solvePickDishFromRack, # new
-    "PourSphere-v1": solvePourSphere, # new
-    "PegInsertionSide-v2": solvePegInsertionSide, # new
+    "PegInsertionSideColosseumV2-v1": solvePegInsertionSide, # new
+    "PlugChargerColosseumV2-v1": solvePlugCharger, # new
     "HammerNail-v1": solveHammerNail,
     "OpenCabinet-v1": solveOpenCabinet,
-    "ObjectInCabinet-v1": solveObjectInCabinet,
     "PlaceCubeInDrawer-v1": solvePlaceCubeInDrawer,
-
+    "StackCubeColosseumV2-v1": solveStackCube,
+    "LiftPegUprightColosseumV2-v1": solveLiftPegUpright,
+    # "PourSphere-v1": solvePourSphere, # new
+    # "PickBananaFromOpenDrawer-v1": solvePickBananaFromOpenDrawer,    # new
+    # "PickCubeFromDrawer-v1": solvePickCubeFromDrawer,              # new
+    # "PickLightbulbPlaceSocket-v1": solvePickLightbulbPlaceSocket, #new
+    # "PlaceAppleOnPlate-v1": solvePlaceAppleOnPlate, # new
+    # "ObjectInCabinet-v1": solveObjectInCabinet,
+    # 
     # Bimanual
     "DualArmPickCube-v1": solveBimanualPassCube,
     "DualArmLiftPot-v1": solveBimanualLiftPot,
@@ -71,23 +79,64 @@ MP_SOLUTIONS = {
 }
 
 """
-ENV_ID=PickSodaFromCabinet-v1
+# Colosseum v2 single-arm tasks
+ENV_ID="PlaceBookInShelf-v1"
+ENV_ID="CookItemInPan-v1"
+ENV_ID="PickSodaFromCabinet-v1"
+ENV_ID="PickDishFromRack-v1"
+ENV_ID="StackCubeColosseumV2-v1"
+ENV_ID="PlaceDishInRack-v1"
+ENV_ID="LiftPegUprightColosseumV2-v1"
+ENV_ID="RotateArrow-v1"
+ENV_ID="PegInsertionSideColosseumV2-v1"
+ENV_ID="PlugChargerColosseumV2-v1"
+ENV_ID="HammerNail-v1"
+ENV_ID="ScoopBanana-v1"
+ENV_ID="OpenDrawer-v1"
+ENV_ID="OpenCabinet-v1"
+ENV_ID="PlaceCubeInDrawer-v1"
+ENV_ID="RaiseCube-v1"
+
+# Colosseum v2 bimanual tasks
+ENV_ID="DualArmDrawerOpen-v1"
+ENV_ID="DualArmPickCube-v1"
+ENV_ID="DualArmPickBottle-v1"
+ENV_ID="DualArmLiftPot-v1"
+ENV_ID="DualArmLiftTray-v1"
+ENV_ID="DualArmPushBox-v1"
+ENV_ID="DualArmPourPot-v1"
+ENV_ID="DualArmThreading-v1"
+ENV_ID="DualArmPenCap-v1"
+ENV_ID="DualArmDrawerPlace-v1"
+ENV_ID="DualArmStackCube-v1"
+ENV_ID="DualArmStack3Cube-v1"
+
+
+#DISTRACTION_SET=all
 DISTRACTION_SET=none
-# ^ Must be one of: none, all, distractor_object_cfg, MO_color_cfg, MO_texture_cfg, RO_color_cfg, RO_texture_cfg, table_color_cfg, table_texture_cfg, camera_pose_cfg
+DISTRACTION_SET=pose_randomization
+DISTRACTION_SET=ro_color
+DISTRACTION_SET="background_color"
+DISTRACTION_SET="ro_color"
+DISTRACTION_SET="table_color"
+DISTRACTION_SET=distractor_object
+
+# ^ Must be one of: none, all, distractor_object, MO_color_cfg, MO_texture_cfg, RO_color_cfg, RO_texture_cfg, table_color_cfg, table_texture_cfg, camera_pose_cfg
 
 
 python mani_skill/examples/motionplanning/panda/run.py \
     --env-id ${ENV_ID} \
-    --num-traj 100 \
+    --num-traj 5 \
     --distraction-set ${DISTRACTION_SET} \
-    --num-procs 1 \
+    --num-procs 2 \
     --obs-mode "rgb" \
-    --reward-mode "sparse" \
+    --reward-mode "none" \
     --random-seed \
     --only-count-success \
     --traj-name "trajectory" --vis \
     --save-video      # <- optional
     # --vis           # <- optional
+
 
 # Convert to ee_delta_pos with:
 python mani_skill/trajectory/replay_trajectory.py \
@@ -117,13 +166,12 @@ def parse_args(args=None):
     parser.add_argument("--num-procs", type=int, default=1, help="Number of processes to use to help parallelize the trajectory replay process. This uses CPU multiprocessing and only works with the CPU simulation backend at the moment.")
     parser.add_argument("--distraction-set", type=str, required=True, help=f"Distraction set to use. Available options are {list(DISTRACTION_SETS.keys())}")
     parser.add_argument("--save-images", action="store_true", help="whether or not to save images locally")
+    parser.add_argument("--ignore-keys", nargs="*", default=[], help="keys to ignore when saving the trajectory")
     return parser.parse_args()
 
 def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
     env_id = args.env_id
     distraction_set = DISTRACTION_SETS[args.distraction_set.upper()]
-    print("Distraction set:")
-    print(json.dumps(distraction_set.to_dict(), indent=2))
     try:
         env = gym.make(
             env_id,
@@ -135,7 +183,8 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
             human_render_camera_configs=dict(shader_pack=args.shader),
             viewer_camera_configs=dict(shader_pack=args.shader),
             sim_backend=args.sim_backend,
-            distraction_set=distraction_set
+            distraction_set=distraction_set,
+            _env_id=env_id
         )
     except TypeError as e:
         assert "got an unexpected keyword argument 'distraction_set'" in str(e)
@@ -162,7 +211,7 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
     if args.num_procs > 1:
         new_traj_name = new_traj_name + "." + str(proc_id)
     env = RecordEpisode(
-        env,
+        cast(BaseEnv, env),
         output_dir=osp.join(args.record_dir, env_id, "motionplanning"),
         trajectory_name=new_traj_name, save_video=args.save_video,
         source_type="motionplanning",
@@ -175,20 +224,15 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
     solve = MP_SOLUTIONS[env_id]
     pbar = tqdm(range(args.num_traj), desc=f"proc_id: {proc_id}")
     seed = start_seed
-    print(f"Motion Planning Running on {env_id} with seed {seed}")
     successes = []
     solution_episode_lengths = []
     failed_motion_plans = 0
     passed = 0
+    counter = 0
     while True:
+        counter += 1
         env.reset(seed=seed, options={"reconfigure": True}) # reconfigure so distractor variations are resampled
         res = solve(env, seed=seed, debug=False, vis=True if args.vis else False)
-        # try:
-        # except Exception as e:
-        #     print(f"Cannot find valid solution because of an error in motion planning solution: {e}")
-        #     print("Traceback:")
-        #     print(''.join(traceback.format_tb(e.__traceback__)))
-        #     res = -1
 
         if res == -1:
             success = False
@@ -196,35 +240,146 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
         else:
             success = res[-1]["success"].item()
             elapsed_steps = res[-1]["elapsed_steps"].item()
-            solution_episode_lengths.append(elapsed_steps)
-        print(f"Success: {success}")
+
         successes.append(success)
         if args.only_count_success and not success:
+            failed_motion_plans += 1
             seed += 1
             env.flush_trajectory(save=False)
             if args.save_video:
                 env.flush_video(save=False)
             continue
         else:
+            # Only save episode length if the solution was successful
+            solution_episode_lengths.append(elapsed_steps)
             env.flush_trajectory()
             if args.save_video:
                 env.flush_video(name=f"{new_traj_name}___n:{len(successes)}")
             pbar.update(1)
-            pbar.set_postfix(
-                dict(
-                    success_rate=np.mean(successes),
-                    failed_motion_plan_rate=failed_motion_plans / (seed + 1),
-                    avg_episode_length=np.mean(solution_episode_lengths),
-                    max_episode_length=np.max(solution_episode_lengths) if solution_episode_lengths else -1,
-                    min_episode_length=np.min(solution_episode_lengths) if solution_episode_lengths else -1
-                )
-            )
             seed += 1
             passed += 1
             if passed == args.num_traj:
                 break
+
+        pbar.set_postfix(
+            dict(
+                success_pct=f"{100 - ((failed_motion_plans / counter) * 100):.2f}%",
+                failed_motion_plan_pct=f"{(failed_motion_plans / counter) * 100:.2f}%",
+                avg_episode_length=np.mean(solution_episode_lengths),
+                max_episode_length=np.max(solution_episode_lengths) if solution_episode_lengths else -1,
+                min_episode_length=np.min(solution_episode_lengths) if solution_episode_lengths else -1
+            )
+        )
     env.close()
+
+    print()
+    print(f"Summary ({proc_id=}):")
+    print("  success_rate:           ", np.mean(successes),)
+    print("  failed_motion_plan_rate:", failed_motion_plans / (seed + 1))
+    print("  avg_episode_length:     ", np.mean(solution_episode_lengths))
+    print("  std_episode_length:     ", np.std(solution_episode_lengths))
+    print("  max_episode_length:     ", np.max(solution_episode_lengths) if solution_episode_lengths else -1)
+    print("  min_episode_length:     ", np.min(solution_episode_lengths) if solution_episode_lengths else -1)
+    print()
+
     return output_h5_path
+
+
+def remove_keys_from_h5(h5_path: str, ignore_keys: list[str]) -> None:
+    """ This function removes specific keys from an h5 file and saves the result to a new file. H5 files have the 
+    following structure:
+
+        /                        Group
+        /traj_0                  Group
+        /traj_0/actions          Dataset {79, 8}
+        /traj_0/env_states       Group
+        /traj_0/env_states/actors Group
+        /traj_0/env_states/actors/cube Dataset {80, 13}
+        /traj_0/env_states/actors/table Dataset {80, 13}
+        /traj_0/env_states/articulations Group
+        /traj_0/env_states/articulations/panda Dataset {80, 31}
+        /traj_0/obs              Group
+        /traj_0/obs/agent        Group
+        /traj_0/obs/agent/qpos   Dataset {80, 9}
+        /traj_0/obs/agent/qvel   Dataset {80, 9}
+        /traj_0/obs/agent/world__T__ee Dataset {80, 4, 4}
+        /traj_0/obs/agent/world__T__root Dataset {80, 4, 4}
+        /traj_0/obs/extra        Group
+        /traj_0/obs/extra/is_grasped Dataset {80}
+        /traj_0/obs/extra/tcp_pose Dataset {80, 7}
+        /traj_1/
+        /traj_1/actions 
+        ...
+
+    Ignore keys used the format: '/obs/extra'. Note that the keys are assumed to be relative to a given trajectory in 
+    the h5 file.
+    """
+    if len(ignore_keys) == 0:
+        return
+
+    # Normalize ignore keys:
+    # - allow either "/obs/extra" or "obs/extra"
+    # - treat keys as paths relative to each "traj_*" group
+    norm_ignore_keys: list[str] = []
+    for k in ignore_keys:
+        if k is None:
+            continue
+        k2 = str(k).strip()
+        if not k2:
+            continue
+        k2 = k2.lstrip("/").rstrip("/")
+        if k2:
+            norm_ignore_keys.append(k2)
+
+    if not norm_ignore_keys:
+        return
+
+    tmp_path = h5_path + ".tmp_pruned"
+    if osp.exists(tmp_path):
+        os.remove(tmp_path)
+
+    def _copy_attrs(src_obj: h5py.Group | h5py.Dataset, dst_obj: h5py.Group | h5py.Dataset) -> None:
+        for k, v in src_obj.attrs.items():
+            dst_obj.attrs[k] = v
+
+    def _should_prune(rel_path: str) -> bool:
+        # Prune if this node is explicitly ignored.
+        # Descendants are naturally pruned by never recursing into pruned groups.
+        return rel_path in norm_ignore_keys
+
+    def _copy_group_pruned(src_traj_group: h5py.Group, dst_traj_group: h5py.Group) -> None:
+        """Copy a single traj group, excluding any paths matching norm_ignore_keys."""
+        _copy_attrs(src_traj_group, dst_traj_group)
+
+        def _recurse(src_group: h5py.Group, dst_group: h5py.Group, rel_prefix: str) -> None:
+            for name, obj in src_group.items():
+                child_rel = name if rel_prefix == "" else f"{rel_prefix}/{name}"
+                if _should_prune(child_rel):
+                    continue
+                if isinstance(obj, h5py.Dataset):
+                    src_group.file.copy(obj, dst_group, name=name)
+                elif isinstance(obj, h5py.Group):
+                    new_dst = dst_group.create_group(name)
+                    _copy_attrs(obj, new_dst)
+                    _recurse(obj, new_dst, child_rel)
+                else:
+                    raise ValueError(f"Unknown HDF5 object type: {type(obj)}")
+
+        _recurse(src_traj_group, dst_traj_group, "")
+
+    with h5py.File(h5_path, "r") as src, h5py.File(tmp_path, "w") as dst:
+        _copy_attrs(src, dst)
+
+        for top_name, top_obj in src.items():
+            if isinstance(top_obj, h5py.Group) and top_name.startswith("traj_"):
+                new_traj = dst.create_group(top_name)
+                _copy_group_pruned(top_obj, new_traj)
+            else:
+                src.copy(top_obj, dst, name=top_name)
+
+    os.replace(tmp_path, h5_path)
+
+
 
 def main(args):
     if args.num_procs > 1 and args.num_procs < args.num_traj:
@@ -232,10 +387,16 @@ def main(args):
             raise ValueError("Number of trajectories should be greater than or equal to number of processes")
         args.num_traj = args.num_traj // args.num_procs
         seeds = [*range(0, args.num_procs * args.num_traj, args.num_traj)]
-        pool = mp.Pool(args.num_procs)
         proc_args = [(deepcopy(args), i, seeds[i]) for i in range(args.num_procs)]
-        res = pool.starmap(_main, proc_args)
-        pool.close()
+
+        # NOTE:
+        # multiprocessing.Pool uses *daemon* workers, which cannot spawn child
+        # processes. SAPIEN's coacd convex decomposition spawns a child process,
+        # so we use ProcessPoolExecutor instead (workers are non-daemonic).
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=args.num_procs, mp_context=ctx) as ex:
+            res = list(ex.map(_main, *(zip(*proc_args))))
+
         # Merge trajectory files
         output_path = res[0][: -len("0.h5")] + "h5"
         merge_trajectories(output_path, res)
@@ -250,7 +411,12 @@ def main(args):
             seed = np.random.randint(0, int(2**32-1))
         else:
             seed = 0
-        _main(args, start_seed=seed)
+        output_path = _main(args, start_seed=seed)
+
+    if args.ignore_keys is not None and len(args.ignore_keys) > 0:
+        cprint(f"WARNING: Removing keys: {args.ignore_keys} from {output_path}", "yellow")
+        remove_keys_from_h5(output_path, args.ignore_keys)
+
 
 if __name__ == "__main__":
     mp.set_start_method("spawn")

@@ -33,14 +33,14 @@ from act.detr.detr_vae import build_encoder, DETRVAE
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 import tyro
-from mani_skill.envs.distraction_set import DISTRACTION_SETS
+from mani_skill.envs.tasks.tabletop.colosseum_v2.distraction_set import DISTRACTION_SETS
+from mani_skill.envs.tasks.tabletop import *
 
 # Note(@jstmn): 'world__T__ee', 'world__T__root' were added to the observation space of the Panda agent as a 
 # convenience feature. We remove it here because it isn't included in the default ACT method. Additionally, it 
 # causes at torch shape mismatch error, because the configuration space is [batch x ndof], but these values are
 # [batch x 4 x 4]
 OBS_KEYS_TO_REMOVE = {"world__T__ee", "world__T__root"}
-
 
 @dataclass
 class Args:
@@ -125,6 +125,11 @@ class Args:
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
 
+    checkpoint_path: str | None = None
+    """the path to the checkpoint to load"""
+    results_path: str | None = None
+    """the path to save results to"""
+
 
 class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
     """
@@ -196,7 +201,8 @@ class FlattenRGBDObservationWrapper(gym.ObservationWrapper):
 
 
 class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
-    def __init__(self, data_path, num_queries, num_traj, include_depth=True):
+    def __init__(self, data_path, num_queries, num_traj, include_depth=True, args=None):
+        self._args = args
         if data_path[-4:] == '.pkl':
             raise NotImplementedError()
         else:
@@ -260,7 +266,7 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
 
         # Pad after the trajectory, so all the observations are utilized in training
         if action_len < self.num_queries:
-            if 'delta_pos' in args.control_mode or args.control_mode == 'base_pd_joint_vel_arm_pd_joint_vel':
+            if 'delta_pos' in self._args.control_mode or self._args.control_mode == 'base_pd_joint_vel_arm_pd_joint_vel':
                 gripper_action = act_seq[-1, -1]
                 pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
                 act_seq = torch.cat([act_seq, pad_action.repeat(self.num_queries-action_len, 1)], dim=0)
@@ -321,7 +327,8 @@ class SmallDemoDataset_ACTPolicy(Dataset): # Load everything into memory
             depth = torch.stack(images_depth, dim=1) # (ep_len, num_cams, 1, 224, 224) # float16
 
         # flatten the rest of the data which should just be state data
-        obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
+        if 'extra' in obs_dict:
+            obs_dict['extra'] = {k: v[:, None] if len(v.shape) == 1 else v for k, v in obs_dict['extra'].items()} # dirty fix for data that has one dimension (e.g. is_grasped)
         obs_dict = common.flatten_state_dict(obs_dict, use_torch=True)
 
         processed_obs = dict(state=obs_dict, rgb=rgb, depth=depth) if self.include_depth else dict(state=obs_dict, rgb=rgb)
@@ -395,6 +402,7 @@ class Agent(nn.Module):
             action_dim=self.act_dim,
             num_queries=args.num_queries,
         )
+        self._args = args
 
     def compute_loss(self, obs, action_seq):
         # normalize rgb data
@@ -402,7 +410,7 @@ class Agent(nn.Module):
         obs['rgb'] = self.normalize(obs['rgb'])
 
         # depth data
-        if args.include_depth:
+        if self._args.include_depth:
             obs['depth'] = obs['depth'].float()
 
         # forward pass
@@ -426,7 +434,7 @@ class Agent(nn.Module):
         obs['rgb'] = self.normalize(obs['rgb'])
 
         # depth data
-        if args.include_depth:
+        if self._args.include_depth:
             obs['depth'] = obs['depth'].float()
 
         # forward pass
@@ -461,6 +469,8 @@ def save_ckpt(run_name, tag):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+
+    assert args.sim_backend in ("physx_cpu", "physx_cuda")
 
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
@@ -501,7 +511,7 @@ if __name__ == "__main__":
     envs = make_eval_envs(args.env_id, args.num_eval_envs, args.sim_backend, env_kwargs, other_kwargs, video_dir=f'runs/{run_name}/videos' if args.capture_video else None, wrappers=wrappers)
 
     # dataloader setup
-    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth)
+    dataset = SmallDemoDataset_ACTPolicy(args.demo_path, args.num_queries, num_traj=args.num_demos, include_depth=args.include_depth, args=args)
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)

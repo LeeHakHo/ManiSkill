@@ -1,0 +1,359 @@
+from typing import List, Optional, Union
+
+import numpy as np
+import sapien
+import torch
+import trimesh
+
+from mani_skill.agents.robots import Panda
+from mani_skill.sensors.camera import CameraConfig
+from mani_skill.utils import common, sapien_utils
+from mani_skill.utils.building import actors, articulations
+from mani_skill.utils.geometry.geometry import transform_points
+from mani_skill.utils.registration import register_env
+from mani_skill.utils.structs import Articulation, Link, Pose
+from mani_skill.envs.tasks.tabletop.colosseum_v2.colosseum_v2_core import ColosseumV2Env, DisabledVariationFactors, PlacementRegion
+
+CABINET_COLLISION_BIT = 29
+
+
+@register_env(
+    "PlaceCubeInDrawer-v1",
+    asset_download_ids=["partnet_mobility_cabinet"],
+    max_episode_steps=200,
+)
+class PlaceCubeInDrawerEnv(ColosseumV2Env):
+    """
+    **Task Description:**
+    Open a drawer, pick up a cube from the table, and place it inside the drawer.
+
+    **Randomizations:**
+    - Cube spawns on the table with small xy noise.
+
+    **Success Conditions:**
+    - The drawer is open (>30% of range).
+    - The cube is inside the drawer.
+    - The cube is static.
+    - The robot is not grasping the cube.
+    """
+
+    SUPPORTED_ROBOTS = ["panda_wristcam", "panda"]
+    agent: Panda
+    handle_types = ["prismatic"]  # Drawer joints
+
+    CUBE_HALF_SIZE = 0.035
+
+    DISABLED_VARIATION_FACTORS = DisabledVariationFactors(
+        MO_color=True,
+        MO_texture=True,
+        RO_color=True,
+        RO_texture=True,
+        RO_size=True,
+    )
+
+    def __init__(
+        self,
+        *args,
+        robot_uids="panda_wristcam",
+        robot_init_qpos_noise=0.0,
+        **kwargs,
+    ):
+        self.robot_init_qpos_noise = robot_init_qpos_noise
+        self._model_id = 45427  # Same cabinet as PickCubeFromDrawer
+
+        self._cube_x_lims = (-0.1, 0.1)
+        self._cube_y_lims = (0.4, 0.6)
+        self._cabinet_x_lims = (-0.1, 0.1)
+        self._cabinet_y_lims = (-0.6, -0.4)
+
+        super().__init__(
+            *args,
+            robot_uids=robot_uids,
+            **kwargs,
+        )
+
+    @property
+    def _default_human_render_camera_configs(self):
+        pose = sapien_utils.look_at(eye=[0.5, 0.9, 0.6], target=[0.0, -0.2, 0.3])
+        return CameraConfig(
+            "render_camera", pose=pose, width=512, height=512, fov=1, near=0.01, far=100
+        )
+
+    @property
+    def _default_sensor_configs(self):
+        pose1 = sapien_utils.look_at(eye=[0.3, 0.1, 0.6], target=[-0.1, 0.0, 0.1])
+        pose2 = sapien_utils.look_at(eye=[-0.2, 0.0, 0.8], target=[-0.1, 0.0, 0.1])
+        return self.update_camera_configs(
+            [
+                CameraConfig("external1_camera", pose1, 224, 224, np.pi / 2, 0.01, 100),
+                CameraConfig("external2_camera", pose2, 224, 224, np.pi / 2, 0.01, 100),
+            ]
+        )
+
+    def _load_agent(self, options: dict):
+        # Robot positioned perpendicular to cabinet (at -Y, facing +Y)
+        super()._load_agent(options, sapien.Pose(p=[0, -0.615, 0]))
+
+    def _load_scene(self, options: dict):
+        self._load_cabinets(self.handle_types)
+        self._hidden_objects.append(self.handle_link_goal)
+
+        cube_builder = lambda: self._load_cube()
+        self.cube = self.add_asset_to_scene(cube_builder, name="cube", physics_type="dynamic", object_type="MO")
+
+        self.load_scene_hook(manipulation_objects=[self.cube])
+
+        #
+        self._cube_region = self.update_placement_region(
+            PlacementRegion(x_lims=self._cube_x_lims, y_lims=self._cube_y_lims)
+        )
+        self._cabinet_region = self.update_placement_region(
+            PlacementRegion(x_lims=self._cabinet_x_lims, y_lims=self._cabinet_y_lims)
+        )
+
+    def _load_cube(self):
+        # Build cube with high friction so it stays in drawer
+        builder = self.scene.create_actor_builder()
+        material = sapien.physx.PhysxMaterial(
+            static_friction=2.0,
+            dynamic_friction=2.0,
+            restitution=0.0,
+        )
+        builder.add_box_collision(
+            half_size=[self.CUBE_HALF_SIZE] * 3,
+            material=material,
+        )
+        builder.add_box_visual(
+            half_size=[self.CUBE_HALF_SIZE] * 3,
+            material=sapien.render.RenderMaterial(base_color=[1, 0, 0, 1]),
+        )
+        builder.set_initial_pose(sapien.Pose(p=[0, 0, self.CUBE_HALF_SIZE]))
+        return builder
+
+    def _load_cabinets(self, joint_types: List[str]):
+        # Use the bottom drawer (same as PickCubeFromDrawer)
+        link_ids = [2]
+
+        self._cabinets = []
+        handle_links: List[List[Link]] = []
+        handle_links_meshes: List[List[trimesh.Trimesh]] = []
+
+        cabinet_builder = articulations.get_articulation_builder(
+            self.scene, f"partnet-mobility:{self._model_id}"
+        )
+        cabinet_builder.initial_pose = sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0])
+        cabinet = cabinet_builder.build(name=f"cabinet-{self._model_id}")
+        self.remove_from_state_dict_registry(cabinet)
+
+        for link in cabinet.links:
+            link.set_collision_group_bit(
+                group=2, bit_idx=CABINET_COLLISION_BIT, bit=1
+            )
+        self._cabinets.append(cabinet)
+        handle_links.append([])
+        handle_links_meshes.append([])
+
+        for link, joint in zip(cabinet.links, cabinet.joints):
+            if joint.type[0] in joint_types:
+                handle_links[-1].append(link)
+                meshes = link.generate_mesh(
+                    filter=lambda _, render_shape: "handle" in render_shape.name,
+                    mesh_name="handle",
+                )
+                if meshes:
+                    handle_links_meshes[-1].append(meshes[0])
+                else:
+                    handle_links_meshes[-1].append(None)
+
+        if not handle_links[0]:
+            raise ValueError(
+                f"No {joint_types} joints found in cabinet model {self._model_id}."
+            )
+
+        self.cabinet = Articulation.merge(self._cabinets, name="cabinet")
+        self.add_to_state_dict_registry(self.cabinet)
+
+        self.handle_link = Link.merge(
+            [links[link_ids[i] % len(links)] for i, links in enumerate(handle_links)],
+            name="handle_link",
+        )
+
+        handle_pos_list = [
+            meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
+            if meshes[link_ids[i] % len(meshes)] is not None
+            else [0, 0, 0]
+            for i, meshes in enumerate(handle_links_meshes)
+        ]
+        # Expand to num_envs (single model replicated across all parallel envs)
+        self.handle_link_pos = common.to_tensor(
+            np.array(handle_pos_list * self.num_envs),
+            device=self.device,
+        )
+
+        self.handle_link_goal = actors.build_sphere(
+            self.scene,
+            radius=0.02,
+            color=[0, 1, 0, 1],
+            name="handle_link_goal",
+            body_type="kinematic",
+            add_collision=False,
+            initial_pose=sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0]),
+        )
+
+        # Add drive properties to allow drawer to be driven open
+        for cabinet in self._cabinets:
+            for joint in cabinet.joints:
+                if joint.type[0] == "prismatic":
+                    joint.set_drive_properties(stiffness=0.0, damping=50.0)
+
+    def _after_reconfigure(self, options):
+        cabinet_zs = []
+        for cabinet in self._cabinets:
+            collision_mesh = cabinet.get_first_collision_mesh()
+            cabinet_zs.append(-collision_mesh.bounding_box.bounds[0, 2])
+        # Expand to num_envs (single model replicated across all parallel envs)
+        self.cabinet_zs = common.to_tensor(
+            cabinet_zs * self.num_envs, device=self.device
+        )
+
+        target_qlimits = self.handle_link.joint.limits
+        qmin, qmax = target_qlimits[..., 0], target_qlimits[..., 1]
+        self.target_qpos = qmin + (qmax - qmin) * 0.5
+
+    def handle_link_positions(self, env_idx: Optional[torch.Tensor] = None):
+        if env_idx is None:
+            return transform_points(
+                self.handle_link.pose.to_transformation_matrix().clone(),
+                common.to_tensor(self.handle_link_pos, device=self.device),
+            )
+        return transform_points(
+            self.handle_link.pose[env_idx].to_transformation_matrix().clone(),
+            common.to_tensor(self.handle_link_pos[env_idx], device=self.device),
+        )
+
+    def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
+        with torch.device(self.device):
+            b = len(env_idx)
+
+            # Position cabinet so robot approaches perpendicular
+            # Robot is at Y=-0.615, cabinet rotated so drawer faces -Y (towards robot)
+            # Swapped: cabinet now on the right side
+            cabinet_pos = torch.zeros((b, 3))
+            # cabinet_pos[:, 0] = self._cabinet_x_lims[0] + (torch.rand(b) - 0.5) * (self._cabinet_x_lims[1] - self._cabinet_x_lims[0])     # X position (right side)
+            # cabinet_pos[:, 1] = self._cabinet_y_lims[0] + (torch.rand(b) - 0.5) * (self._cabinet_y_lims[1] - self._cabinet_y_lims[0])    # Y position
+            cabinet_pos[:, 0:2] = self._cabinet_region.sample_xy(b, device=self.device)
+            cabinet_pos[:, 2] = self.cabinet_zs[env_idx]
+
+            # Rotate 90° clockwise around Z so drawer faces -Y
+            cabinet_quat = torch.zeros((b, 4))
+            cabinet_quat[:, 0] = 0.7071  # cos(-45°)
+            cabinet_quat[:, 3] = -0.7071  # sin(-45°)
+
+            self.cabinet.set_pose(Pose.create_from_pq(p=cabinet_pos, q=cabinet_quat))
+
+            # Close all drawers
+            qlimits = self.cabinet.get_qlimits()
+            self.cabinet.set_qpos(qlimits[env_idx, :, 0])
+            self.cabinet.set_qvel(self.cabinet.qpos[env_idx] * 0)
+
+            if self.gpu_sim_enabled:
+                self.scene._gpu_apply_all()
+                self.scene.px.gpu_update_articulation_kinematics()
+                self.scene.px.step()
+                self.scene._gpu_fetch_all()
+
+            # Initialize robot at pre-grasp pose (ready to grasp handle)
+            pregrasp_qpos = np.array([
+                1.1327756643295288, 1.102452039718628, -1.1890534162521362, -1.8933054208755493,
+                -0.6512154340744019, 2.07772159576416, -1.7972638607025146,
+                0.04, 0.04  # gripper open
+            ])
+
+            if self.gpu_sim_enabled:
+                self.scene._gpu_apply_all()
+                self.scene.px.gpu_update_articulation_kinematics()
+                self.scene.px.step()
+                self.scene._gpu_fetch_all()
+
+            self.handle_link_goal.set_pose(
+                Pose.create_from_pq(p=self.handle_link_positions(env_idx))
+            )
+
+            # Place cube on table (NOT in drawer - this is the key difference)
+            self._place_cube_on_table(env_idx)
+
+            self.initialize_episode_hook(env_idx, mo_pose=self.cube.pose, qpos_0=pregrasp_qpos)
+
+    def _place_cube_on_table(self, env_idx: torch.Tensor):
+        """Place cube on the table with random position offset."""
+        with torch.device(self.device):
+            b = len(env_idx)
+
+            # Place cube on table, to the left of the cabinet
+            # Robot is at Y=-0.615, cabinet at X=0.10
+            # Swapped: cube now on the left side
+            cube_xyz = torch.zeros((b, 3))
+            # cube_xyz[:, 0] = self._cube_x_lims[0] + (torch.rand(b) - 0.5) * (self._cube_x_lims[1] - self._cube_x_lims[0])  # X: to the left
+            # cube_xyz[:, 1] = self._cube_y_lims[0] + (torch.rand(b) - 0.5) * (self._cube_y_lims[1] - self._cube_y_lims[0])  # Y: between robot and cabinet
+            cube_xyz[:, 0:2] = self._cube_region.sample_xy(b, device=self.device)
+            cube_xyz[:, 2] = self.CUBE_HALF_SIZE
+
+            self.cube.set_pose(Pose.create_from_pq(p=cube_xyz))
+
+    def _after_control_step(self):
+        if self.gpu_sim_enabled:
+            self.scene.px.gpu_update_articulation_kinematics()
+            self.scene._gpu_fetch_all()
+
+        self.handle_link_goal.set_pose(
+            Pose.create_from_pq(p=self.handle_link_positions())
+        )
+
+        if self.gpu_sim_enabled:
+            self.scene._gpu_apply_all()
+
+    def evaluate(self):
+        cube_pos = self.cube.pose.p
+        handle_pos = self.handle_link_positions()
+
+        # Check if drawer is open enough (>30% of range)
+        qlimits = self.handle_link.joint.limits
+        qmin, qmax = qlimits[..., 0], qlimits[..., 1]
+        qpos = self.handle_link.joint.qpos
+        if qpos.ndim > 1:
+            qpos = qpos.squeeze(-1)
+        if qmin.ndim > 1:
+            qmin = qmin.squeeze(-1)
+        if qmax.ndim > 1:
+            qmax = qmax.squeeze(-1)
+        drawer_open_pct = (qpos - qmin) / (qmax - qmin + 1e-6)
+        is_drawer_open = drawer_open_pct > 0.30
+
+        # Check if cube is inside the drawer
+        # Drawer interior is behind the handle (in -Y direction since drawer faces -Y)
+        drawer_center = handle_pos.clone()
+        drawer_center[..., 1] -= 0.12  # Behind handle into drawer
+
+        cube_to_drawer_dist_xy = torch.linalg.norm(
+            cube_pos[..., :2] - drawer_center[..., :2], dim=-1
+        )
+        cube_z_ok = torch.abs(cube_pos[..., 2] - drawer_center[..., 2]) < 0.08
+        is_cube_in_drawer = (cube_to_drawer_dist_xy < 0.10) & cube_z_ok
+
+        # Check if cube is static
+        is_cube_static = self.cube.is_static(lin_thresh=0.1, ang_thresh=0.5)
+
+        # Check if robot is not grasping cube
+        is_cube_grasped = self.agent.is_grasping(self.cube)
+
+        success = is_drawer_open & is_cube_in_drawer & is_cube_static & (~is_cube_grasped)
+
+        return {
+            "success": success,
+            "is_drawer_open": is_drawer_open,
+            "is_cube_in_drawer": is_cube_in_drawer,
+            "is_cube_static": is_cube_static,
+            "is_cube_grasped": is_cube_grasped,
+            "drawer_open_pct": drawer_open_pct,
+            "handle_link_pos": handle_pos,
+        }

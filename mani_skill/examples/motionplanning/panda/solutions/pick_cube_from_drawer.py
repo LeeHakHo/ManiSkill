@@ -2,7 +2,7 @@ import numpy as np
 import sapien
 from transforms3d.euler import euler2quat
 
-from mani_skill.envs.tasks.tabletop.colosseum_v2_versions.pick_cube_from_drawer import PickCubeFromDrawerEnv
+from mani_skill.envs.tasks.tabletop.colosseum_v2.pick_cube_from_drawer import PickCubeFromDrawerEnv
 from mani_skill.examples.motionplanning.panda.motionplanner import PandaArmMotionPlanningSolver
 
 
@@ -172,7 +172,7 @@ def solve(env: PickCubeFromDrawerEnv, seed=None, debug=False, vis=False):
 
 
 if __name__ == "__main__":
-    from mani_skill.envs.distraction_set import DistractionSet
+    from mani_skill.envs.tasks.tabletop.colosseum_v2.distraction_set import DistractionSet
     import gymnasium as gym
 
     env = gym.make(

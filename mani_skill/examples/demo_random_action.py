@@ -1,16 +1,71 @@
+from typing import Optional, Annotated, Union
+from dataclasses import dataclass
+
 import gymnasium as gym
 import numpy as np
 import sapien
+import tyro
 
+import mani_skill.envs
 from mani_skill.envs.sapien_env import BaseEnv
-from mani_skill.envs.distraction_set import DistractionSet
 from mani_skill.utils import gym_utils
+from mani_skill.envs.tasks.tabletop.colosseum_v2.distraction_set import DISTRACTION_SETS, DistractionSet
 from mani_skill.utils.wrappers import RecordEpisode
 
 
-import tyro
-from dataclasses import dataclass
-from typing import List, Optional, Annotated, Union
+
+"""
+# ALL_COLOSSEUM_V2_SINGLE_ARM_TASKS
+ENV_ID="RaiseCube-v1"
+ENV_ID="PickSodaFromCabinet-v1"
+ENV_ID="PickDishFromRack-v1"
+ENV_ID="StackCube-v1"
+ENV_ID="PlaceBookInShelf-v1"
+ENV_ID="PlaceDishInRack-v1"
+ENV_ID="LiftPegUpright-v1"
+ENV_ID="RotateArrow-v1"
+ENV_ID="PegInsertionSide-v2"
+ENV_ID="PlugCharger-v1"
+ENV_ID="HammerNail-v1"
+ENV_ID="ScoopBanana-v1"
+ENV_ID="OpenDrawer-v1"
+ENV_ID="OpenCabinet-v1"
+ENV_ID="PlaceCubeInDrawer-v1"
+ENV_ID="CookItemInPan-v1"
+
+
+# ALL_COLOSSEUM_V2_BIMANUAL_TASKS
+ENV_ID="DualArmPickCube-v1"
+ENV_ID="DualArmPickBottle-v1"
+ENV_ID="DualArmLiftPot-v1"
+ENV_ID="DualArmLiftTray-v1"
+ENV_ID="DualArmPushBox-v1"
+ENV_ID="DualArmPourPot-v1"
+ENV_ID="DualArmThreading-v1"
+ENV_ID="DualArmPenCap-v1"
+ENV_ID="DualArmDrawerPlace-v1"
+ENV_ID="DualArmDrawerOpen-v1"
+ENV_ID="DualArmStackCube-v1"
+ENV_ID="DualArmStack3Cube-v1"
+
+
+python mani_skill/examples/demo_random_action.py \
+    --env-id ${ENV_ID} \
+    --num-envs 1 \
+    --obs-mode "rgb" \
+    --reward-mode "none" \
+    --sim-backend "physx_cpu" \
+    --record-dir "demos/random_action" \
+    --render-mode "human" \
+    --distraction-set "background_color"
+
+
+    --distraction-set "background_texture"
+
+    --num-envs 2 \
+    --sim-backend "cuda" \
+"""
+
 
 @dataclass
 class Args:
@@ -56,6 +111,8 @@ class Args:
     seed: Annotated[Optional[Union[int, list[int]]], tyro.conf.arg(aliases=["-s"])] = None
     """Seed(s) for random actions and simulator. Can be a single integer or a list of integers. Default is None (no seeds)"""
 
+    distraction_set: Annotated[Optional[list[str]], tyro.conf.arg(aliases=["-d"])] = None
+    """Distraction set"""
 
 def main(args: Args):
     if args.render_mode == "none":
@@ -72,6 +129,14 @@ def main(args: Args):
         parallel_in_single_scene = False
     if args.render_mode == "human" and args.num_envs == 1:
         parallel_in_single_scene = False
+        
+    
+    # Create the distraction set
+    distraction_set = None
+    if args.distraction_set is not None:
+        distraction_sets = [DISTRACTION_SETS[distraction_set.upper()] for distraction_set in args.distraction_set]
+        distraction_set = DistractionSet.merge(distraction_sets)
+
     env_kwargs = dict(
         obs_mode=args.obs_mode,
         reward_mode=args.reward_mode,
@@ -85,7 +150,7 @@ def main(args: Args):
         render_backend=args.render_backend,
         enable_shadow=True,
         parallel_in_single_scene=parallel_in_single_scene,
-        distraction_set=DistractionSet(),
+        distraction_set=distraction_set,
     )
     if args.robot_uids is not None:
         env_kwargs["robot_uids"] = tuple(args.robot_uids.split(","))

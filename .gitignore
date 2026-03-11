@@ -46,3 +46,15 @@ imgui.ini
 htmlcov/
 venv/
 notes
+runs/
+checkpoints/
+
+logs/
+
+*.ply
+
+logs_*/
+thirdparty/
+
+slurm-*
+sbatch_*

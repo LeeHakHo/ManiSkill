@@ -3,6 +3,7 @@ import h5py
 import os
 import cv2
 from pathlib import Path
+from mani_skill.utils.visualization.misc import images_to_video
 
 
 """ This script accepts a path to a h5 file. It extracts all the images and saves them to a directory of the same name.
@@ -62,10 +63,14 @@ The h5 file format is:
     /traj_0/truncated        Dataset {76}
 
 # Example usage:
-python scripts/extract_h5_images.py --h5-file demos/RaiseCube-v1/motionplanning/trajectory.h5
+python scripts/extract_h5_images.py \
+    --h5-file demos/RaiseCube-v1/motionplanning/trajectory_500x500.h5 \
+    --first-n-trajectories 3 \
+    --first-n-timesteps 65 \
+    --save-video
 """
 
-def save_h5_images(h5_file_path: str):
+def save_h5_images(h5_file_path: str, first_n_timesteps: int | None = None, first_n_trajectories: int | None = None, prefix: str = "", save_video: bool = False):
     with h5py.File(h5_file_path, 'r') as f:
 
         # First, create the save directories
@@ -78,6 +83,16 @@ def save_h5_images(h5_file_path: str):
         # Then, save the images
         for traj_key in f.keys():
             assert traj_key.startswith('traj_')
+
+            traj_idx = int(traj_key.split('_')[-1])
+            if first_n_trajectories is not None and traj_idx > first_n_trajectories:
+                continue
+
+            if save_video:
+                video_images = {
+                    camera_name: [] for camera_name in camera_names
+                }
+
             traj_group = f[traj_key]
             assert 'obs' in traj_group
             assert 'sensor_data' in traj_group['obs']
@@ -85,12 +100,42 @@ def save_h5_images(h5_file_path: str):
             for camera_name in sensor_data.keys():
                 rgbs = sensor_data[camera_name]['rgb']
                 for i, rgb in enumerate(rgbs):
-                    image_path = save_dirs[camera_name] / f"{traj_key}___{i:03d}.png"
-                    rgb = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(str(image_path), rgb)
+                    image_path = save_dirs[camera_name] / f"{prefix}{traj_key}___{i:03d}.png"
+                    rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(image_path), rgb_bgr)
+                    print(f"Saved image to {image_path}")
+
+                    if save_video:
+                        video_images[camera_name].append(rgb)
+
+                    if first_n_timesteps is not None and i > first_n_timesteps:
+                        break
+
+            if save_video:
+                for camera_name in video_images.keys():
+                    images_to_video(
+                        images=video_images[camera_name],
+                        output_dir=str(save_dirs[camera_name]),
+                        video_name=f"{prefix}{traj_key}__video",
+                        fps=30,
+                        quality=5,
+                        verbose=True,
+                    )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--h5-file", type=str, required=True)
+    parser.add_argument("--first-n-timesteps", type=int, required=False, default=None)
+    parser.add_argument("--first-n-trajectories", type=int, required=False, default=None)
+    parser.add_argument("--save-video", action="store_true", required=False, default=False)
+    parser.add_argument("--prefix", type=str, required=False, default="")
     args = parser.parse_args()
-    save_h5_images(args.h5_file)
+    assert os.path.exists(args.h5_file), f"H5 file {args.h5_file} does not exist"
+    save_h5_images(
+        h5_file_path=args.h5_file,
+        first_n_timesteps=args.first_n_timesteps,
+        first_n_trajectories=args.first_n_trajectories,
+        prefix=args.prefix,
+        save_video=args.save_video,
+    )
